@@ -140,7 +140,11 @@ async def validate_vehicle_control(
                 await api.close()
                 raise SchemaFlowError("phone_limit") from err
             except Exception as ex:  # pylint: disable=broad-except
-                _LOGGER.error("Unable to enable control for %s: %s", vehicle_name, ex)
+                _LOGGER.error(
+                    "Unable to enable control for %s (%s)",
+                    vehicle_name,
+                    type(ex).__name__,
+                )
             if not success:
                 user_input[CONF_VEHICLE_CONTROL] = [
                     vehicle
@@ -156,7 +160,11 @@ async def validate_vehicle_control(
                 if not (success := await api.disenroll_phone(identity_id=identity_id)):
                     _LOGGER.warning("Unable to disable control for %s", vehicle_name)
             except Exception as ex:  # pylint: disable=broad-except
-                _LOGGER.error("Unable to disable control for %s: %s", vehicle_name, ex)
+                _LOGGER.error(
+                    "Unable to disable control for %s (%s)",
+                    vehicle_name,
+                    type(ex).__name__,
+                )
             # should we do something else if unable to disenroll?
 
     await api.close()
@@ -240,7 +248,7 @@ class RivianFlowHandler(ConfigFlow, domain=DOMAIN):
                     msg = f"{error['message']}: {reason}"
                     show_otp = reason == "INVALID_OTP_TOKEN"
                 except Exception:  # pylint: disable=broad-except
-                    msg = str(err)
+                    msg = "Authentication failed"
                 _LOGGER.error(msg)
                 self._errors["base"] = msg
                 if show_otp:
@@ -262,7 +270,7 @@ class RivianFlowHandler(ConfigFlow, domain=DOMAIN):
         try:
             await self.rivian.authenticate(username, password)
         except RivianUnauthenticated as err:
-            _LOGGER.error(err)
+            _LOGGER.error("Rivian authentication failed (%s)", type(err).__name__)
             self._errors["base"] = "invalid_auth"
             return await self._show_credential_fields(user_input)
 

@@ -62,7 +62,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         await client.create_csrf_token()
     except Exception as err:  # pylint: disable=broad-except
-        _LOGGER.error("Could not update Rivian Data: %s", err, exc_info=1)
+        _LOGGER.error("Could not update Rivian data (%s)", type(err).__name__)
         await client.close()
         raise ConfigEntryNotReady("Error communicating with API") from err
 

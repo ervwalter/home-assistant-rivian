@@ -38,6 +38,71 @@ _LOGGER = logging.getLogger(__name__)
 T = TypeVar("T", bound=dict[str, Any] | list[dict[str, Any]])
 
 
+def _graphql_error_details(
+    error: RivianApiException,
+) -> tuple[int | None, str | None, str | None, str | None]:
+    """Extract non-sensitive GraphQL error details from a client exception."""
+    status = next((arg for arg in error.args if isinstance(arg, int)), None)
+    response = next(
+        (
+            arg
+            for arg in error.args
+            if isinstance(arg, dict) and isinstance(arg.get("errors"), list)
+        ),
+        {},
+    )
+    request = next(
+        (
+            arg
+            for arg in error.args
+            if isinstance(arg, dict) and isinstance(arg.get("operationName"), str)
+        ),
+        {},
+    )
+    graphql_error = next(
+        (item for item in response.get("errors", []) if isinstance(item, dict)), {}
+    )
+    extensions = graphql_error.get("extensions", {})
+    code = extensions.get("code") if isinstance(extensions, dict) else None
+    message = graphql_error.get("message")
+    if isinstance(message, str):
+        message = " ".join(message.split())[:500]
+    else:
+        message = None
+    return (
+        status,
+        request.get("operationName"),
+        code if isinstance(code, str) else None,
+        message,
+    )
+
+
+def _log_api_exception(error: RivianApiException) -> None:
+    """Log an API error without serializing request headers or tokens."""
+    status, operation, code, message = _graphql_error_details(error)
+    if any(value is not None for value in (status, operation, code, message)):
+        _LOGGER.error(
+            "Rivian API request failed: operation=%s status=%s code=%s message=%s",
+            operation,
+            status,
+            code,
+            message,
+        )
+        return
+    _LOGGER.error("Rivian API request failed (%s)", type(error).__name__)
+
+
+def _is_removed_live_session_query(error: RivianApiException) -> bool:
+    """Return whether Rivian rejected the removed legacy charging query."""
+    _, operation, code, message = _graphql_error_details(error)
+    return (
+        operation == "getLiveSessionData"
+        and code == "GRAPHQL_VALIDATION_FAILED"
+        and message is not None
+        and 'Cannot query field "getLiveSessionData"' in message
+    )
+
+
 class RivianDataUpdateCoordinator(DataUpdateCoordinator[T], Generic[T], ABC):
     """Data update coordinator for the Rivian integration."""
 
@@ -98,23 +163,29 @@ class RivianDataUpdateCoordinator(DataUpdateCoordinator[T], Generic[T], ABC):
             _LOGGER.info("Rivian token expired, refreshing")
             await self.api.create_csrf_token()
             return await self._async_update_data()
-        except RivianApiRateLimitError as err:
-            _LOGGER.error("Rate limit being enforced: %s", err, exc_info=1)
+        except RivianApiRateLimitError:
+            _LOGGER.error("Rivian API rate limit is being enforced; backing off")
             self._set_update_interval()
         except RivianUnauthenticated as err:
             await self.api.close()
             raise ConfigEntryAuthFailed from err
-        except RivianApiException as ex:
-            _LOGGER.error("Rivian api exception: %s", ex, exc_info=1)
-        except Exception as ex:  # pylint: disable=broad-except
+        except RivianApiException as err:
+            if (fallback := self._api_exception_fallback(err)) is not None:
+                return fallback
+            _log_api_exception(err)
+        except Exception as err:  # pylint: disable=broad-except
             _LOGGER.error(
-                "Unknown Exception while updating Rivian data: %s", ex, exc_info=1
+                "Unknown exception while updating Rivian data (%s)", type(err).__name__
             )
 
         self._error_count += 1
         if self.data:
             return self.data
         raise UpdateFailed("Error communicating with API")
+
+    def _api_exception_fallback(self, error: RivianApiException) -> T | None:
+        """Return coordinator-specific fallback data for a known API error."""
+        return None
 
     @abstractmethod
     async def _fetch_data(self) -> ClientResponse:
@@ -140,6 +211,7 @@ class ChargingCoordinator(RivianDataUpdateCoordinator[dict[str, Any]]):
         """Initialize the coordinator."""
         super().__init__(hass=hass, config_entry=config_entry, client=client)
         self.vehicle_id = vehicle_id
+        self._live_session_query_unavailable = False
 
     async def _fetch_data(self) -> ClientResponse:
         """Fetch the data."""
@@ -147,8 +219,24 @@ class ChargingCoordinator(RivianDataUpdateCoordinator[dict[str, Any]]):
             vin=self.vehicle_id, properties=CHARGING_API_FIELDS
         )
 
+    def _api_exception_fallback(
+        self, error: RivianApiException
+    ) -> dict[str, Any] | None:
+        """Keep vehicle setup running when the legacy charging query is removed."""
+        if not _is_removed_live_session_query(error):
+            return None
+        if not self._live_session_query_unavailable:
+            _LOGGER.warning(
+                "Legacy live charging data is no longer available; continuing without it"
+            )
+        self._live_session_query_unavailable = True
+        self.update_interval = None
+        return self.data or {}
+
     def adjust_update_interval(self, is_plugged_in: bool) -> None:
         """Adjust update interval based on plugged in status."""
+        if self._live_session_query_unavailable:
+            return
         self._set_update_interval(
             self._plugged_interval if is_plugged_in else self._unplugged_interval
         )
