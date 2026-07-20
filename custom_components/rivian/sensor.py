@@ -64,7 +64,12 @@ def vehicle_sensor_descriptions(
         if "PX_STATE_ALL" in vehicle.get("supported_features", []):
             descriptions += (
                 tuple(
-                    description
+                    replace(
+                        description,
+                        options=[*(description.options or ()), "Unknown"],
+                    )
+                    if description.key == "power_state"
+                    else description
                     for description in SENSORS["R1"]
                     if description.key in R2_PX_SENSOR_KEYS
                 )
