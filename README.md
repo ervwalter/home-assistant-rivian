@@ -79,6 +79,35 @@ Note: If you are having issues with pairing your vehicle, we recommend investing
 
 ## Available Sensors
 
+### R2 support
+
+R2 vehicles use Rivian's Parallax telemetry stream in addition to the legacy
+vehicle-state stream. The integration requests only the Parallax topics
+advertised by the vehicle's supported-feature flags and keeps last-known durable
+values while an asleep vehicle is quiet.
+
+The R2 profile includes battery state of charge and stored energy, range,
+odometer, location and altitude, power state, cabin and high-voltage battery
+temperatures, tire pressures, all four doors, the front trunk, the liftgate, all
+four side windows, the liftgate window, aggregate lock state, gear, all seven R2
+drive modes, and the account, key, software, and vehicle-image entities that
+Rivian makes available. Raw numeric enum values are retained in diagnostics, and
+unrecognized values appear as unknown instead of being assigned a guessed label.
+The charge-port door is not created because it was not exposed by the observed
+R2 telemetry topics.
+
+R2 charging entities include connection and charging status, total energy and
+the battery/thermal/outlet/system breakdown, range added, power, rate, elapsed
+and remaining time, and session start time when a valid charging graph is
+available. Live power, rate, and remaining time expire if an active stream stops
+updating. Stopping a session while plugged in sets those live values to zero and
+retains the final totals; unplugging resets numeric session values to zero and
+clears the session start time. Charging cost is not created because no verified
+direct R2 value is currently available.
+
+Remote vehicle controls are not created for R2 vehicles. Their secure command
+and pairing path differs from the supported R1 path.
+
 | Name                                                | Domain         | Description                            |
 | --------------------------------------------------- | -------------- | -------------------------------------- |
 | 12V Battery Health                                  | Sensor         |                                        |

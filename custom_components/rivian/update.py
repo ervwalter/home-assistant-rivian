@@ -22,6 +22,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import ATTR_COORDINATOR, ATTR_VEHICLE, DOMAIN
 from .coordinator import VehicleCoordinator
 from .entity import RivianVehicleEntity
+from .r2 import is_r2_vehicle
 
 INSTALLING_STATUS = ("Install_Countdown", "Awaiting_Install", "Installing")
 READY_FOR_INSTALL = ("Ready_To_Install", "Scheduled_To_Install")
@@ -65,15 +66,24 @@ class RivianUpdateEntity(RivianVehicleEntity, UpdateEntity):
     ) -> None:
         """Construct a Rivian vehicle update entity."""
         super().__init__(coordinator, config_entry, description, vehicle)
-        self.can_install = vehicle.get("phone_identity_id") is not None
+        self._is_r2 = is_r2_vehicle(vehicle)
+        self.can_install = (
+            not self._is_r2 and vehicle.get("phone_identity_id") is not None
+        )
         self._update_version_info()
 
     def _update_version_info(self) -> None:
         current_version = self._get_value("otaCurrentVersion")
-        if (latest_version := self._get_value("otaAvailableVersion")) == "0.0.0":
+        if self._is_r2 and not current_version:
+            current_version = "unknown"
+        latest_version = self._get_value("otaAvailableVersion")
+        if latest_version == "0.0.0" or (self._is_r2 and not latest_version):
             latest_version = current_version
         current_hash = self._get_value("otaCurrentVersionGitHash")
-        if (latest_hash := self._get_value("otaAvailableVersionGitHash")) == "":
+        if self._is_r2 and current_hash is None:
+            current_hash = ""
+        latest_hash = self._get_value("otaAvailableVersionGitHash")
+        if latest_hash == "" or (self._is_r2 and latest_hash is None):
             latest_hash = current_hash
         show_hash = (current_version, current_hash) != (latest_version, latest_hash)
 

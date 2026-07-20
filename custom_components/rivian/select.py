@@ -16,6 +16,7 @@ from .const import ATTR_COORDINATOR, ATTR_VEHICLE, DOMAIN
 from .coordinator import VehicleCoordinator
 from .data_classes import RivianSelectEntityDescription
 from .entity import RivianVehicleControlEntity
+from .r2 import supports_vehicle_control
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -104,7 +105,7 @@ async def async_setup_entry(
     entities = [
         RivianSelectEntity(coordinators[vehicle_id], entry, description, vehicle)
         for vehicle_id, vehicle in vehicles.items()
-        if vehicle.get("phone_identity_id")
+        if supports_vehicle_control(vehicle)
         for description in SELECTS
     ]
     async_add_entities(entities)

@@ -54,6 +54,15 @@
       "active_driver": {
         "name": "Active driver"
       },
+      "r2_charging_status": {
+        "name": "Charging status",
+        "state": {
+          "unplugged": "Unplugged",
+          "charging": "Charging",
+          "stopped": "Stopped",
+          "unknown": "Unknown"
+        }
+      },
       "charging_status": {
         "state": {
           "unavailable": "Unavailable",

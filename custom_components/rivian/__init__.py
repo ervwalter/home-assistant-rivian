@@ -11,6 +11,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.device_registry import DeviceEntry
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.issue_registry import (
     IssueSeverity,
     async_create_issue,
@@ -30,6 +31,8 @@ from .const import (
 )
 from .coordinator import UserCoordinator, VehicleCoordinator, WallboxCoordinator
 from .helpers import get_rivian_api_from_entry
+from .r2 import R2_OBSOLETE_ENTITY_KEYS, is_r2_vehicle
+from .r2_coordinator import R2VehicleCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS: list[Platform] = [
@@ -91,18 +94,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         enrolled := coordinator.get_enrolled_phone_data(entry.options.get("public_key"))
     ):
         for vehicle_id in vehicles:
-            if vehicle_id in enrolled[1]:
+            if vehicle_id in enrolled[1] and not is_r2_vehicle(vehicles[vehicle_id]):
                 vehicles[vehicle_id]["phone_identity_id"] = enrolled[1][vehicle_id]
 
     vehicle_coordinators: dict[str, VehicleCoordinator] = {}
-    for vehicle_id in vehicles:
-        coor = VehicleCoordinator(
-            hass=hass, config_entry=entry, client=client, vehicle_id=vehicle_id
+    for vehicle_id, vehicle in vehicles.items():
+        coor = (
+            R2VehicleCoordinator(
+                hass=hass,
+                config_entry=entry,
+                client=client,
+                vehicle=vehicle | {"id": vehicle_id},
+            )
+            if is_r2_vehicle(vehicle)
+            else VehicleCoordinator(
+                hass=hass, config_entry=entry, client=client, vehicle_id=vehicle_id
+            )
         )
         await coor.async_config_entry_first_refresh()
-        if not coor.data:
+        if not coor.data and not is_r2_vehicle(vehicle):
             raise ConfigEntryNotReady("Issue loading vehicle data")
-        await coor.charging_coordinator.async_config_entry_first_refresh()
+        if not is_r2_vehicle(vehicle):
+            await coor.charging_coordinator.async_config_entry_first_refresh()
         await coor.drivers_coordinator.async_config_entry_first_refresh()
         vehicle_coordinators[vehicle_id] = coor
 
@@ -121,11 +134,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         },
     }
 
+    _async_remove_obsolete_r2_entities(hass, entry, vehicles)
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     entry.async_on_unload(entry.add_update_listener(update_listener))
 
     return True
+
+
+def _async_remove_obsolete_r2_entities(
+    hass: HomeAssistant, entry: ConfigEntry, vehicles: dict[str, dict]
+) -> None:
+    """Remove registry entries that cannot be supplied or controlled on exact R2."""
+    r2_vins = {
+        vehicle["vin"] for vehicle in vehicles.values() if is_r2_vehicle(vehicle)
+    }
+    if not r2_vins:
+        return
+    entity_registry = er.async_get(hass)
+    for registry_entry in er.async_entries_for_config_entry(
+        entity_registry, entry.entry_id
+    ):
+        for vin in r2_vins:
+            prefix = f"{vin}-"
+            if not registry_entry.unique_id.startswith(prefix):
+                continue
+            key = registry_entry.unique_id.removeprefix(prefix)
+            if key in R2_OBSOLETE_ENTITY_KEYS:
+                entity_registry.async_remove(registry_entry.entity_id)
+            break
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

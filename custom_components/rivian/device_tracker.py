@@ -51,7 +51,16 @@ class RivianDeviceEntity(RivianVehicleEntity, TrackerEntity):
         """Create a Rivian device tracker entity."""
         super().__init__(coordinator, config_entry, description, vehicle)
         self._attribute = "gnssLocation"
-        self._tracker_data = coordinator.data[self._attribute]
+        self._tracker_data = self._observation_coordinator.get_location() or {}
+
+    @property
+    def available(self) -> bool:
+        """Return whether a complete location has been observed."""
+        return (
+            super().available
+            and self._tracker_data.get("latitude") is not None
+            and self._tracker_data.get("longitude") is not None
+        )
 
     @property
     def force_update(self) -> bool:
@@ -61,12 +70,12 @@ class RivianDeviceEntity(RivianVehicleEntity, TrackerEntity):
     @property
     def latitude(self) -> float | None:
         """Return latitude value of the device."""
-        return self._tracker_data["latitude"]
+        return self._tracker_data.get("latitude")
 
     @property
     def longitude(self) -> float | None:
         """Return longitude value of the device."""
-        return self._tracker_data["longitude"]
+        return self._tracker_data.get("longitude")
 
     @property
     def source_type(self) -> SourceType:
@@ -78,16 +87,16 @@ class RivianDeviceEntity(RivianVehicleEntity, TrackerEntity):
     #     return self._tracker_data[6]
 
     @property
-    def extra_state_attributes(self) -> Mapping[str, Any]:
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
         """Return the state attributes of the device."""
-        return {
-            "last_update": self._tracker_data["timeStamp"],
-        }
+        if timestamp := self._tracker_data.get("timeStamp"):
+            return {"last_update": timestamp}
+        return None
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Respond to a DataUpdateCoordinator update."""
-        entity = self.coordinator.data[self._attribute]
+        entity = self._observation_coordinator.get_location() or {}
         try:
             if entity["timeStamp"] != self._tracker_data["timeStamp"]:
                 self._tracker_data = entity

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime
 import logging
 from typing import Any, Final
@@ -22,6 +23,7 @@ from homeassistant.const import (
     UnitOfLength,
     UnitOfPower,
     UnitOfSpeed,
+    UnitOfTemperature,
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
@@ -41,10 +43,51 @@ from .entity import (
     RivianVehicleEntity,
     RivianWallboxEntity,
 )
+from .r2 import R2_PX_SENSOR_KEYS, R2_SENSOR_KEYS, is_r2_vehicle
+from .r2_coordinator import R2ChargingCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
 RIVIAN_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%f%z"
+
+
+def vehicle_sensor_descriptions(
+    vehicle: dict[str, Any],
+) -> tuple[RivianSensorEntityDescription, ...]:
+    """Return the stable sensor profile selected from model and capabilities."""
+    if is_r2_vehicle(vehicle):
+        descriptions = tuple(
+            description
+            for description in SENSORS["R1"]
+            if description.key in R2_SENSOR_KEYS
+        )
+        if "PX_STATE_ALL" in vehicle.get("supported_features", []):
+            descriptions += (
+                tuple(
+                    description
+                    for description in SENSORS["R1"]
+                    if description.key in R2_PX_SENSOR_KEYS
+                )
+                + R2_VEHICLE_SENSORS
+            )
+        return descriptions
+    return tuple(
+        description
+        for model, model_descriptions in SENSORS.items()
+        if model in vehicle["model"]
+        for description in model_descriptions
+    )
+
+
+def charging_sensor_descriptions(
+    vehicle: dict[str, Any],
+) -> tuple[RivianSensorEntityDescription, ...]:
+    """Return legacy charging sensors or the capability-gated R2 profile."""
+    if not is_r2_vehicle(vehicle):
+        return CHARGING_SENSORS
+    if "CHARG_DATA_PX" in vehicle.get("supported_features", []):
+        return R2_CHARGING_SENSORS
+    return ()
 
 
 async def async_setup_entry(
@@ -57,26 +100,25 @@ async def async_setup_entry(
 
     # Add vehicle entities
     vehicle_coordinators: dict[str, VehicleCoordinator] = coordinators[ATTR_VEHICLE]
-    entities = [
-        RivianSensorEntity(
-            vehicle_coordinators[vehicle_id], entry, description, vehicle
+    entities: list[RivianEntity] = []
+    for vehicle_id, vehicle in vehicles.items():
+        entities.extend(
+            RivianSensorEntity(
+                vehicle_coordinators[vehicle_id], entry, description, vehicle
+            )
+            for description in vehicle_sensor_descriptions(vehicle)
         )
-        for vehicle_id, vehicle in vehicles.items()
-        for model, descriptions in SENSORS.items()
-        if model in vehicle["model"]
-        for description in descriptions
-    ]
 
     # Add charging entities
-    entities.extend(
-        RivianChargingSensorEntity(
-            vehicle_coordinators[vehicle_id].charging_coordinator,
-            description,
-            vehicle["vin"],
+    for vehicle_id, vehicle in vehicles.items():
+        entities.extend(
+            RivianChargingSensorEntity(
+                vehicle_coordinators[vehicle_id].charging_coordinator,
+                description,
+                vehicle["vin"],
+            )
+            for description in charging_sensor_descriptions(vehicle)
         )
-        for vehicle_id, vehicle in vehicles.items()
-        for description in CHARGING_SENSORS
-    )
 
     # Add drivers and keys entities
     entities.extend(
@@ -115,7 +157,8 @@ class RivianSensorEntity(RivianVehicleEntity, SensorEntity):
             return STATE_UNAVAILABLE if not self.native_unit_of_measurement else None
 
         rval = _fn(val) if (_fn := self.entity_description.value_lambda) else val
-        if self.device_class == SensorDeviceClass.ENUM and rval not in self.options:
+        options = list(self.options or ())
+        if self.device_class == SensorDeviceClass.ENUM and rval not in options:
             _LOGGER.error(
                 "Sensor %s provides state value '%s', which is not in the list of known options. Please consider opening an issue at https://github.com/bretterer/home-assistant-rivian/issues with the following info: 'field: \"%s\" / value: \"%s\"'",
                 self.name,
@@ -123,7 +166,7 @@ class RivianSensorEntity(RivianVehicleEntity, SensorEntity):
                 self.entity_description.field,
                 val,
             )
-            self.options.append(rval)
+            self._attr_options = [*options, str(rval)]
         return rval
 
     @property
@@ -150,6 +193,17 @@ class RivianChargingSensorEntity(RivianChargingEntity, SensorEntity):
     """Representation of a Rivian charging sensor entity."""
 
     entity_description: RivianSensorEntityDescription
+
+    @property
+    def available(self) -> bool:
+        """Return whether this R2 field has a current direct observation."""
+        if isinstance(self.coordinator, R2ChargingCoordinator):
+            return (
+                super().available
+                and self.entity_description.field in self.coordinator.data
+                and self.coordinator.data[self.entity_description.field] is not None
+            )
+        return super().available
 
     @property
     def native_value(self) -> str | float | None:
@@ -219,9 +273,9 @@ CHARGING_SENSORS: Final[tuple[RivianSensorEntityDescription, ...]] = (
         field="startTime",
         name="Charging Start Time",
         device_class=SensorDeviceClass.TIMESTAMP,
-        value_lambda=lambda val: datetime.strptime(val, RIVIAN_TIMESTAMP_FORMAT)
-        if val
-        else val,
+        value_lambda=lambda val: (
+            datetime.strptime(val, RIVIAN_TIMESTAMP_FORMAT) if val else val
+        ),
     ),
     RivianSensorEntityDescription(
         key="charging_time_elapsed",
@@ -230,6 +284,138 @@ CHARGING_SENSORS: Final[tuple[RivianSensorEntityDescription, ...]] = (
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
         state_class=SensorStateClass.TOTAL_INCREASING,
+    ),
+)
+
+R2_VEHICLE_SENSORS: Final[tuple[RivianSensorEntityDescription, ...]] = (
+    RivianSensorEntityDescription(
+        key="drive_mode",
+        field="driveMode",
+        name="Drive Mode",
+        icon="mdi:car-speed-limiter",
+        device_class=SensorDeviceClass.ENUM,
+        options=[
+            "All-Purpose",
+            "Sport",
+            "Conserve",
+            "Snow",
+            "All-Terrain",
+            "Soft Sand",
+            "Rally",
+            "unknown",
+        ],
+    ),
+    RivianSensorEntityDescription(
+        key="gear_status",
+        field="gearStatus",
+        name="Gear Selector",
+        icon="mdi:car-shift-pattern",
+        device_class=SensorDeviceClass.ENUM,
+        options=["Drive", "Neutral", "Park", "Reverse", "unknown"],
+    ),
+    RivianSensorEntityDescription(
+        key="battery_energy",
+        field="batteryEnergy",
+        name="Battery Energy",
+        device_class=SensorDeviceClass.ENERGY_STORAGE,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    RivianSensorEntityDescription(
+        key="battery_cell_average_temperature",
+        field="batteryCellAverageTemperature",
+        name="Battery Cell Average Temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    RivianSensorEntityDescription(
+        key="battery_cell_max_temperature",
+        field="batteryCellMaxTemperature",
+        name="Battery Cell Maximum Temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+    RivianSensorEntityDescription(
+        key="battery_cell_min_temperature",
+        field="batteryCellMinTemperature",
+        name="Battery Cell Minimum Temperature",
+        device_class=SensorDeviceClass.TEMPERATURE,
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=1,
+    ),
+)
+
+R2_CHARGING_SENSORS: Final[tuple[RivianSensorEntityDescription, ...]] = tuple(
+    replace(description, name="Charging Power")
+    if description.key == "charging_speed"
+    else description
+    for description in CHARGING_SENSORS
+    if description.key
+    in {
+        "charging_energy_delivered",
+        "charging_range_added",
+        "charging_rate",
+        "charging_speed",
+        "charging_start_time",
+        "charging_time_elapsed",
+    }
+) + (
+    RivianSensorEntityDescription(
+        key="charging_session_time_remaining",
+        field="timeRemaining",
+        name="Charging Time Remaining",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    RivianSensorEntityDescription(
+        key="charging_energy_to_pack",
+        field="packChargedEnergy",
+        name="Charging Energy To Battery",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=1,
+    ),
+    RivianSensorEntityDescription(
+        key="charging_energy_thermal",
+        field="thermalChargedEnergy",
+        name="Charging Energy For Thermal Management",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=1,
+    ),
+    RivianSensorEntityDescription(
+        key="charging_energy_outlets",
+        field="outletsChargedEnergy",
+        name="Charging Energy For Outlets",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=1,
+    ),
+    RivianSensorEntityDescription(
+        key="charging_energy_system",
+        field="systemChargedEnergy",
+        name="Charging Energy For Vehicle Systems",
+        device_class=SensorDeviceClass.ENERGY,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        state_class=SensorStateClass.TOTAL,
+        suggested_display_precision=1,
+    ),
+    RivianSensorEntityDescription(
+        key="charging_status",
+        field="sessionStatus",
+        translation_key="r2_charging_status",
+        device_class=SensorDeviceClass.ENUM,
+        options=["unplugged", "charging", "stopped", "unknown"],
     ),
 )
 

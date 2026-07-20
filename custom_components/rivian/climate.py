@@ -22,6 +22,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import ATTR_COORDINATOR, ATTR_VEHICLE, DOMAIN
 from .coordinator import VehicleCoordinator
 from .entity import RivianVehicleControlEntity
+from .r2 import supports_vehicle_control
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ async def async_setup_entry(
     entities = [
         RivianClimateEntity(coordinators[vehicle_id], entry, CLIMATE, vehicle)
         for vehicle_id, vehicle in vehicles.items()
-        if vehicle.get("phone_identity_id")
+        if supports_vehicle_control(vehicle)
     ]
     async_add_entities(entities)
 

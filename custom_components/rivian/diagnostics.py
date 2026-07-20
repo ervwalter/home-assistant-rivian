@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from .const import ATTR_COORDINATOR, ATTR_USER, ATTR_VEHICLE, ATTR_WALLBOX, DOMAIN
 from .coordinator import UserCoordinator, VehicleCoordinator, WallboxCoordinator
 from .helpers import redact
+from .r2_coordinator import R2VehicleCoordinator
 
 
 async def async_get_config_entry_diagnostics(
@@ -28,6 +29,11 @@ async def async_get_config_entry_diagnostics(
         ],
         "drivers": [
             coor.drivers_coordinator.data for coor in vehicle_coordinators.values()
+        ],
+        "r2": [
+            coor.diagnostics()
+            for coor in vehicle_coordinators.values()
+            if isinstance(coor, R2VehicleCoordinator)
         ],
         "wallbox": wallbox_coordinator.data,
     }

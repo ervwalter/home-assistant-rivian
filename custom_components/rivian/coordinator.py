@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import asyncio
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 import logging
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
 from aiohttp import ClientResponse
 from rivian import Rivian, VehicleCommand
@@ -36,6 +36,22 @@ from .helpers import redact
 
 _LOGGER = logging.getLogger(__name__)
 T = TypeVar("T", bound=dict[str, Any] | list[dict[str, Any]])
+
+
+class VehicleObservationProtocol(Protocol):
+    """Shared value and observation access used by vehicle entities."""
+
+    def get(self, key: str) -> Any | None:
+        """Return the current value for a field."""
+
+    def get_observation(self, key: str) -> Any | None:
+        """Return source observation metadata for a field."""
+
+    def is_field_available(self, key: str) -> bool:
+        """Return whether a field currently has a usable value."""
+
+    def get_location(self) -> dict[str, Any] | None:
+        """Return the current complete vehicle location."""
 
 
 class RivianDataUpdateCoordinator(DataUpdateCoordinator[T], Generic[T], ABC):
@@ -245,7 +261,9 @@ class UserCoordinator(RivianDataUpdateCoordinator[dict[str, Any]]):
         }
 
 
-class VehicleCoordinator(RivianDataUpdateCoordinator[dict[str, Any]]):
+class VehicleCoordinator(
+    RivianDataUpdateCoordinator[dict[str, Any]], VehicleObservationProtocol
+):
     """Vehicle data update coordinator for Rivian."""
 
     key = "vehicleState"
@@ -268,7 +286,7 @@ class VehicleCoordinator(RivianDataUpdateCoordinator[dict[str, Any]]):
             hass=hass, config_entry=config_entry, client=client, vehicle_id=vehicle_id
         )
         self._initial = asyncio.Event()
-        self._unsub_handler: Coroutine[None, None, None] | None = None
+        self._unsub_handler: Callable[[], Awaitable[None]] | None = None
         self._awake = asyncio.Event()
 
     async def _async_update_data(self) -> dict[str, Any]:
@@ -359,6 +377,26 @@ class VehicleCoordinator(RivianDataUpdateCoordinator[dict[str, Any]]):
         """Get a data value by key."""
         if entity := self.data.get(key, {}):
             return entity.get("value")
+        return None
+
+    def get_observation(self, key: str) -> dict[str, Any] | None:
+        """Return the legacy field wrapper as its source observation."""
+        observation = self.data.get(key)
+        return observation if isinstance(observation, dict) else None
+
+    def is_field_available(self, key: str) -> bool:
+        """Return whether a legacy field currently has a value."""
+        return self.get(key) is not None
+
+    def get_location(self) -> dict[str, Any] | None:
+        """Return a complete legacy-compatible GNSS location."""
+        location = self.data.get("gnssLocation")
+        if (
+            isinstance(location, dict)
+            and location.get("latitude") is not None
+            and location.get("longitude") is not None
+        ):
+            return location
         return None
 
     async def send_vehicle_command(

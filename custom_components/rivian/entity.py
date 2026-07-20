@@ -18,6 +18,7 @@ from .coordinator import (
     RivianDataUpdateCoordinator,
     UserCoordinator,
     VehicleCoordinator,
+    VehicleObservationProtocol,
     WallboxCoordinator,
 )
 
@@ -43,6 +44,7 @@ class RivianVehicleEntity(RivianEntity[VehicleCoordinator]):
     ) -> None:
         """Construct a Rivian vehicle entity."""
         super().__init__(coordinator)
+        self._observation_coordinator: VehicleObservationProtocol = coordinator
         self._config_entry = config_entry
         self.entity_description = description
         self._vin = (vin := vehicle["vin"])
@@ -65,13 +67,13 @@ class RivianVehicleEntity(RivianEntity[VehicleCoordinator]):
     def available(self) -> bool:
         """Return the availability of the entity."""
         if field := getattr(self.entity_description, "field", None):
-            if self._get_value(field) is None:
+            if not self._observation_coordinator.is_field_available(field):
                 return False
         return self._available
 
     def _get_value(self, key: str) -> Any | None:
         """Get a data value from the coordinator."""
-        return self.coordinator.get(key)
+        return self._observation_coordinator.get(key)
 
 
 class RivianVehicleControlEntity(RivianVehicleEntity):

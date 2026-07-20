@@ -16,6 +16,7 @@ from .const import ATTR_COORDINATOR, ATTR_VEHICLE, DOMAIN
 from .coordinator import VehicleCoordinator
 from .data_classes import RivianSwitchEntityDescription
 from .entity import RivianVehicleControlEntity
+from .r2 import supports_vehicle_control
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,10 +36,13 @@ SWITCHES: Final[tuple[RivianSwitchEntityDescription, ...]] = (
         key="charging_enabled",
         icon="mdi:lightning-bolt",
         name="Charging Enabled",
-        available=lambda coor: coor.get("remoteChargingAvailable") == 1
-        or coor.get("chargerState") == "charging_active",
-        is_on=lambda coor: coor.get("chargerState")
-        in ("charging_active", "charging_connecting"),
+        available=lambda coor: (
+            coor.get("remoteChargingAvailable") == 1
+            or coor.get("chargerState") == "charging_active"
+        ),
+        is_on=lambda coor: (
+            coor.get("chargerState") in ("charging_active", "charging_connecting")
+        ),
         turn_off=lambda coor: coor.send_vehicle_command(
             command=VehicleCommand.STOP_CHARGING
         ),
@@ -84,7 +88,7 @@ async def async_setup_entry(
     entities = [
         RivianSwitchEntity(coordinators[vehicle_id], entry, description, vehicle)
         for vehicle_id, vehicle in vehicles.items()
-        if vehicle.get("phone_identity_id")
+        if supports_vehicle_control(vehicle)
         for description in SWITCHES
     ]
     async_add_entities(entities)

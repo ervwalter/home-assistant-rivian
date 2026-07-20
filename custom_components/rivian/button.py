@@ -24,6 +24,7 @@ from .const import ATTR_COORDINATOR, ATTR_USER, ATTR_VEHICLE, DOMAIN
 from .coordinator import UserCoordinator, VehicleCoordinator
 from .data_classes import RivianButtonEntityDescription
 from .entity import RivianVehicleControlEntity
+from .r2 import supports_vehicle_control
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -60,8 +61,9 @@ BUTTONS: Final[dict[str | None, tuple[RivianButtonEntityDescription, ...]]] = {
         RivianButtonEntityDescription(
             key="drop_tailgate",
             name="Drop Tailgate",
-            available=lambda coordinator: coordinator.get("closureTailgateClosed")
-            != "open",
+            available=lambda coordinator: (
+                coordinator.get("closureTailgateClosed") != "open"
+            ),
             press_fn=lambda coordinator: coordinator.send_vehicle_command(
                 command=VehicleCommand.OPEN_LIFTGATE_UNLATCH_TAILGATE
             ),
@@ -81,7 +83,7 @@ async def async_setup_entry(
     entities = [
         RivianButtonEntity(coordinators[vehicle_id], entry, description, vehicle)
         for vehicle_id, vehicle in vehicles.items()
-        if vehicle.get("phone_identity_id")
+        if supports_vehicle_control(vehicle)
         for feature, descriptions in BUTTONS.items()
         if feature is None or feature in (vehicle.get("supported_features", []))
         for description in descriptions
@@ -94,6 +96,7 @@ async def async_setup_entry(
             vehicle,
         )
         for vehicle_id, vehicle in vehicles.items()
+        if supports_vehicle_control(vehicle)
         if (
             device := coordinators[vehicle_id].drivers_coordinator.get_device_details(
                 vehicle.get("phone_identity_id")

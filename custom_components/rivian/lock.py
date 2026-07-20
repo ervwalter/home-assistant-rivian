@@ -16,6 +16,7 @@ from .const import ATTR_COORDINATOR, ATTR_VEHICLE, DOMAIN, LOCK_STATE_ENTITIES
 from .coordinator import VehicleCoordinator
 from .data_classes import RivianLockEntityDescription
 from .entity import RivianVehicleControlEntity
+from .r2 import supports_vehicle_control
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,8 +25,8 @@ LOCKS: Final[tuple[RivianLockEntityDescription, ...]] = (
     RivianLockEntityDescription(
         key="closures",
         name="Closures",
-        is_locked=lambda coordinator: not any(
-            coordinator.get(key) == "unlocked" for key in LOCK_STATE_ENTITIES
+        is_locked=lambda coordinator: (
+            not any(coordinator.get(key) == "unlocked" for key in LOCK_STATE_ENTITIES)
         ),
         lock=lambda coordinator: coordinator.send_vehicle_command(
             command=VehicleCommand.LOCK_ALL_CLOSURES_FEEDBACK
@@ -48,7 +49,7 @@ async def async_setup_entry(
     entities = [
         RivianLockEntity(coordinators[vehicle_id], entry, description, vehicle)
         for vehicle_id, vehicle in vehicles.items()
-        if vehicle.get("phone_identity_id")
+        if supports_vehicle_control(vehicle)
         for description in LOCKS
     ]
     async_add_entities(entities)
