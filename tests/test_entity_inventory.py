@@ -139,6 +139,15 @@ def test_r2_inventory_is_stable_and_capability_gated() -> None:
         "tire_pressure_rear_left",
         "tire_pressure_rear_right",
     } <= set(_keys(vehicle_sensor_descriptions(full_vehicle)))
+    r2_sensors = {
+        description.key: description
+        for description in vehicle_sensor_descriptions(full_vehicle)
+    }
+    assert "Unknown" in (r2_sensors["power_state"].options or ())
+    r1_power_state = next(
+        description for description in SENSORS["R1"] if description.key == "power_state"
+    )
+    assert "Unknown" not in (r1_power_state.options or ())
 
 
 def test_registry_cleanup_only_removes_obsolete_exact_r2_entities() -> None:
