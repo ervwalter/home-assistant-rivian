@@ -22,7 +22,12 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DOMAIN, INVALID_SENSOR_STATES, VEHICLE_STATE_API_FIELDS
+from .const import (
+    DOMAIN,
+    DRIVE_MODE_MAP,
+    INVALID_SENSOR_STATES,
+    VEHICLE_STATE_API_FIELDS,
+)
 from .coordinator import VehicleCoordinator
 from .r2 import (
     R2_CLOSURE_FIELDS,
@@ -521,6 +526,7 @@ class R2VehicleCoordinator(VehicleCoordinator):
         incoming = pdata.get(self.key, {})
         usable_incoming = {
             field: entity
+            | {"value": self._normalize_legacy_value(field, entity["value"])}
             for field, entity in incoming.items()
             if isinstance(entity, dict)
             and "value" in entity
@@ -548,6 +554,19 @@ class R2VehicleCoordinator(VehicleCoordinator):
         self.async_set_updated_data(vehicle_info)
         self._error_count = 0
         self._initial.set()
+
+    @staticmethod
+    def _normalize_legacy_value(field: str, value: Any) -> Any:
+        """Normalize R2 enum aliases from the supplemental legacy snapshot."""
+        if not isinstance(value, str):
+            return value
+        if field == "driveMode":
+            normalized = DRIVE_MODE_MAP.get(value, value)
+            return normalized if normalized in R2_DRIVE_MODES.values() else "unknown"
+        if field == "gearStatus":
+            normalized = value.title()
+            return normalized if normalized in R2_GEAR_STATES.values() else "unknown"
+        return value
 
     @callback
     def _process_parallax_message(self, message: ParallaxMessage) -> None:

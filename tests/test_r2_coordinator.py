@@ -656,6 +656,35 @@ def test_r2_legacy_invalid_values_never_replace_durable_state() -> None:
     )
 
 
+def test_r2_legacy_enum_aliases_match_parallax_entity_options() -> None:
+    """Initial legacy enums use the same labels as later Parallax frames."""
+    coordinator = _vehicle_coordinator()
+
+    coordinator._process_new_data(
+        {
+            "payload": {
+                "data": {
+                    "vehicleState": {
+                        "driveMode": {
+                            "value": "everyday",
+                            "timeStamp": "2026-01-01T00:00:01Z",
+                        },
+                        "gearStatus": {
+                            "value": "park",
+                            "timeStamp": "2026-01-01T00:00:01Z",
+                        },
+                    }
+                }
+            }
+        }
+    )
+
+    assert coordinator.get("driveMode") == "All-Purpose"
+    assert coordinator.get("gearStatus") == "Park"
+    assert coordinator.data["driveMode"]["value"] == "All-Purpose"
+    assert coordinator.data["gearStatus"]["value"] == "Park"
+
+
 def test_closure_and_lock_derivations_require_correlated_codes() -> None:
     """Raw body codes persist while unknown derived states become unavailable."""
     coordinator = _vehicle_coordinator()
