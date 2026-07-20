@@ -9,6 +9,8 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/bretterer/home-assistant-rivian/issues",
   "loggers": ["custom_components.rivian", "rivian"],
-  "requirements": ["rivian-python-client[ble]==2.0.0"],
+  "requirements": [
+    "rivian-python-client[ble] @ https://github.com/ervwalter/rivian-python-client/releases/download/2.1.0b1/rivian_python_client-2.1.0b1-py3-none-any.whl#sha256=1c34996dd0db2f7ad8d3740020163de4acd1f6dabac755c54d00430d616c8d78"
+  ],
   "version": "0.0.0"
 }
