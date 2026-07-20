@@ -154,7 +154,7 @@ class RivianChargingSensorEntity(RivianChargingEntity, SensorEntity):
     @property
     def native_value(self) -> str | float | None:
         """Return the value reported by the sensor."""
-        val = self.coordinator.data.get(self.entity_description.field)
+        val = (self.coordinator.data or {}).get(self.entity_description.field)
         if isinstance(val, dict):
             val = val["value"]
         if value_fn := self.entity_description.value_lambda:
@@ -165,7 +165,7 @@ class RivianChargingSensorEntity(RivianChargingEntity, SensorEntity):
     def native_unit_of_measurement(self) -> str | None:
         """Return the unit of measurement of the sensor, if any."""
         if self.entity_description.field == "currentPrice":
-            return self.coordinator.data.get(
+            return (self.coordinator.data or {}).get(
                 "currentCurrency", self.hass.config.currency
             )
         return super().native_unit_of_measurement
@@ -219,9 +219,9 @@ CHARGING_SENSORS: Final[tuple[RivianSensorEntityDescription, ...]] = (
         field="startTime",
         name="Charging Start Time",
         device_class=SensorDeviceClass.TIMESTAMP,
-        value_lambda=lambda val: datetime.strptime(val, RIVIAN_TIMESTAMP_FORMAT)
-        if val
-        else val,
+        value_lambda=lambda val: (
+            datetime.strptime(val, RIVIAN_TIMESTAMP_FORMAT) if val else val
+        ),
     ),
     RivianSensorEntityDescription(
         key="charging_time_elapsed",

@@ -38,6 +38,33 @@ _LOGGER = logging.getLogger(__name__)
 T = TypeVar("T", bound=dict[str, Any] | list[dict[str, Any]])
 
 
+def _safe_api_error_details(
+    error: RivianApiException,
+) -> tuple[int | None, str | None, list[dict[str, str | None]]]:
+    """Extract non-sensitive diagnostic details from an API exception."""
+    status = (
+        error.args[1]
+        if len(error.args) > 1 and isinstance(error.args[1], int)
+        else None
+    )
+    response = (
+        error.args[2] if len(error.args) > 2 and isinstance(error.args[2], dict) else {}
+    )
+    request = (
+        error.args[4] if len(error.args) > 4 and isinstance(error.args[4], dict) else {}
+    )
+
+    errors = [
+        {
+            "code": item.get("extensions", {}).get("code"),
+            "message": item.get("message"),
+        }
+        for item in response.get("errors", [])
+        if isinstance(item, dict)
+    ]
+    return status, request.get("operationName"), errors
+
+
 class RivianDataUpdateCoordinator(DataUpdateCoordinator[T], Generic[T], ABC):
     """Data update coordinator for the Rivian integration."""
 
@@ -99,13 +126,25 @@ class RivianDataUpdateCoordinator(DataUpdateCoordinator[T], Generic[T], ABC):
             await self.api.create_csrf_token()
             return await self._async_update_data()
         except RivianApiRateLimitError as err:
-            _LOGGER.error("Rate limit being enforced: %s", err, exc_info=1)
+            status, operation, errors = _safe_api_error_details(err)
+            _LOGGER.error(
+                "Rivian API rate limit: status=%s operation=%s errors=%s",
+                status,
+                operation,
+                errors,
+            )
             self._set_update_interval()
         except RivianUnauthenticated as err:
             await self.api.close()
             raise ConfigEntryAuthFailed from err
         except RivianApiException as ex:
-            _LOGGER.error("Rivian api exception: %s", ex, exc_info=1)
+            status, operation, errors = _safe_api_error_details(ex)
+            _LOGGER.error(
+                "Rivian API request failed: status=%s operation=%s errors=%s",
+                status,
+                operation,
+                errors,
+            )
         except Exception as ex:  # pylint: disable=broad-except
             _LOGGER.error(
                 "Unknown Exception while updating Rivian data: %s", ex, exc_info=1

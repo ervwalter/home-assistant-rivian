@@ -102,7 +102,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coor.async_config_entry_first_refresh()
         if not coor.data:
             raise ConfigEntryNotReady("Issue loading vehicle data")
-        await coor.charging_coordinator.async_config_entry_first_refresh()
+        try:
+            await coor.charging_coordinator.async_config_entry_first_refresh()
+        except ConfigEntryNotReady:
+            _LOGGER.warning(
+                "Initial charging data is unavailable; continuing vehicle setup"
+            )
         await coor.drivers_coordinator.async_config_entry_first_refresh()
         vehicle_coordinators[vehicle_id] = coor
 

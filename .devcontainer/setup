@@ -5,7 +5,13 @@ set -e
 cd "$(dirname "$0")/.."
 
 # Install system dependencies
-sudo apt-get update && sudo apt-get install -y libturbojpeg0
+# The upstream Python devcontainer image can retain an expired Yarn repository key.
+# This project does not use Yarn, and the stale source prevents apt from installing
+# the libraries Home Assistant needs.
+if [ -f /etc/apt/sources.list.d/yarn.list ]; then
+    sudo rm /etc/apt/sources.list.d/yarn.list
+fi
+sudo apt-get update && sudo apt-get install -y ffmpeg libturbojpeg0
 
 # Install Python dependencies
 python3 -m pip install --upgrade pip

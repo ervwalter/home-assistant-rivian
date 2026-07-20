@@ -1,10 +1,15 @@
 default_config:
 
+# SQLite WAL files are unreliable on the macOS bind mount used by this
+# devcontainer. Keep the disposable development recorder database in-container.
+recorder:
+  db_url: sqlite:////tmp/home-assistant-rivian-dev.db
+
 logger:
   default: info
   logs:
-    custom_components.rivian: debug
-    rivian: debug
+    custom_components.rivian: info
+    rivian: info
 
 # Uncomment to enable remote debugging (https://www.home-assistant.io/integrations/debugpy/)
 # debugpy:
