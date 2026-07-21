@@ -143,6 +143,24 @@ class R2ChargingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.data.pop("startTime", None)
         self._cancel_freshness_timer()
 
+    def _initialize_session_defaults(
+        self, *, rvm: str, timestamp_ms: int | None, received_at: datetime
+    ) -> None:
+        """Initialize unobserved session values with meaningful zeroes."""
+        for field in self._SESSION_NUMERIC_FIELDS:
+            observation = self.observations.get_observation(field)
+            if observation is not None and observation.presence:
+                continue
+            self.observations.lifecycle_reset(
+                field,
+                0,
+                presence=True,
+                source=f"parallax:{rvm}:session_default",
+                source_timestamp_ms=timestamp_ms,
+                received_at=received_at,
+            )
+            self.data[field] = 0
+
     def _publish(self) -> None:
         """Publish charging data and synchronize vehicle-level binary state."""
         current_data = dict(self.data)
@@ -192,7 +210,8 @@ class R2ChargingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         status_names: dict[tuple[int | None, int | None], str] = {
             (1, 1): "unplugged",
             (2, 3): "charging",
-            (2, 4): "stopped",
+            (2, 4): "complete",
+            (2, 5): "scheduled",
             (2, 8): "stopped",
         }
         status_name = status_names.get(
@@ -226,7 +245,7 @@ class R2ChargingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._telemetry_fresh = status_name == "charging"
         self._record(
             "isPluggedIn",
-            status_name in {"charging", "stopped"},
+            status_name in {"charging", "complete", "scheduled", "stopped"},
             rvm=message.rvm,
             timestamp_ms=message.timestamp_ms,
             received_at=received_at,
@@ -239,13 +258,13 @@ class R2ChargingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             received_at=received_at,
         )
 
-        if status_name == "unplugged":
+        if status_name in {"unplugged", "scheduled"}:
             self._clear_session(
                 rvm=message.rvm,
                 timestamp_ms=message.timestamp_ms,
                 received_at=received_at,
             )
-        elif status_name == "stopped":
+        elif status_name in {"complete", "stopped"}:
             # R2 retains its last non-zero rate and charge-state enum after a
             # session stops. The status topic is authoritative for live power.
             for field in self._TRANSIENT_FIELDS:
@@ -260,6 +279,11 @@ class R2ChargingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.data[field] = 0
             self._cancel_freshness_timer()
         else:
+            self._initialize_session_defaults(
+                rvm=message.rvm,
+                timestamp_ms=message.timestamp_ms,
+                received_at=received_at,
+            )
             self._schedule_freshness_expiry()
         self._publish()
 
@@ -271,7 +295,7 @@ class R2ChargingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._note_message(message.rvm, received_at)
         if not self._accept_frame("_liveFrame", message, received_at):
             return
-        if self._plug_connection_status_code == 1:
+        if self._display_status_code == 5 or self._plug_connection_status_code == 1:
             return
         if self._plug_connection_status_code == 2 and self._display_status_code == 3:
             self._telemetry_fresh = True
@@ -321,7 +345,7 @@ class R2ChargingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._note_message(message.rvm, received_at)
         if not self._accept_frame("_timeEstimationFrame", message, received_at):
             return
-        if self._plug_connection_status_code == 1:
+        if self._display_status_code == 5 or self._plug_connection_status_code == 1:
             return
         if self._plug_connection_status_code == 2 and self._display_status_code == 3:
             self._telemetry_fresh = True
@@ -344,7 +368,7 @@ class R2ChargingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._note_message(message.rvm, received_at)
         if not self._accept_frame("_chargingGraphFrame", message, received_at):
             return
-        if self._plug_connection_status_code == 1:
+        if self._display_status_code == 5 or self._plug_connection_status_code == 1:
             return
         start_times = [
             bar.start_time_ms
@@ -388,7 +412,7 @@ class R2ChargingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._plug_connection_status_code,
             self._display_status_code,
         )
-        charging_known = status_pair in {(1, 1), (2, 3), (2, 4), (2, 8)}
+        charging_known = status_pair in {(1, 1), (2, 3), (2, 4), (2, 5), (2, 8)}
         self.observations.lifecycle_reset(
             "isCharging",
             False if charging_known else None,
@@ -596,7 +620,7 @@ class R2VehicleCoordinator(VehicleCoordinator):
             case "energy.high_voltage.battery_state":
                 values = {
                     "batteryLevel": decoded.soc_percent,
-                    "batteryEnergy": decoded.pack_kwh,
+                    "batteryCapacity": decoded.capacity_kwh,
                     "distanceToEmpty": decoded.range_km,
                     "batteryCellAverageTemperature": decoded.cell_average_c,
                     "batteryCellMaxTemperature": decoded.cell_max_c,
@@ -694,7 +718,13 @@ class R2VehicleCoordinator(VehicleCoordinator):
                     field = R2_CLOSURE_FIELDS.get(state.position_code)
                     if field is None:
                         continue
-                    closure_state = {1: "open", 2: "closed"}.get(state.state_code)
+                    closure_state = (
+                        "open"
+                        if state.state_code in {1, 3, 4, 5}
+                        else "closed"
+                        if state.state_code == 2
+                        else None
+                    )
                     if closure_state is None:
                         self._clear_observation(
                             field,
@@ -731,7 +761,7 @@ class R2VehicleCoordinator(VehicleCoordinator):
                 elif (
                     len(decoded.states) == 6
                     and observed_positions == {1, 2, 3, 4, 5, 7}
-                    and all(state.state_code in {1, 2} for state in decoded.states)
+                    and all(state.state_code in {1, 2, 3} for state in decoded.states)
                 ):
                     values["r2AllLocked"] = all(
                         state.state_code == 1 for state in decoded.states
@@ -749,7 +779,7 @@ class R2VehicleCoordinator(VehicleCoordinator):
                             window.state_code
                         )
             case "comfort.cabin.cabin_preconditioning_status":
-                if decoded.status_code not in (None, 2):
+                if decoded.status_code not in (None, 1, 2, 3, 4):
                     self._clear_observation(
                         "cabinPreconditioningStatus",
                         source=f"parallax:{message.rvm}",
@@ -757,7 +787,7 @@ class R2VehicleCoordinator(VehicleCoordinator):
                     )
                 values = {
                     "cabinPreconditioningStatus": "active"
-                    if decoded.status_code == 2
+                    if decoded.status_code in {1, 2, 3, 4}
                     else "inactive"
                     if decoded.status_code is None
                     else None,

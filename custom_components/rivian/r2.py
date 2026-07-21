@@ -34,6 +34,7 @@ R2_PARALLAX_RVMS_BY_FEATURE = {
 
 R2_SENSOR_KEYS = {
     "active_driver",
+    "battery_capacity",
     "battery_level",
     "battery_limit",
     "distance_to_empty",
@@ -87,7 +88,6 @@ R2_BATTERY_SENSOR_KEYS = {
     "battery_cell_average_temperature",
     "battery_cell_max_temperature",
     "battery_cell_min_temperature",
-    "battery_energy",
 }
 
 R2_BINARY_SENSOR_KEYS = {
@@ -125,7 +125,7 @@ R2_CHARGING_SENSOR_KEYS = {
 
 R2_OBSOLETE_ENTITY_KEYS = {
     "alarm",
-    "battery_capacity",
+    "battery_energy",
     "cabin_climate",
     "charge_port",
     "charge_limit",

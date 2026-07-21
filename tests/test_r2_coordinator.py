@@ -79,8 +79,8 @@ def _vehicle_coordinator() -> R2VehicleCoordinator:
     return coordinator
 
 
-def test_active_stopped_and_unplugged_lifecycle(monkeypatch) -> None:
-    """Live values zero on stop, totals persist, and unplug clears the session."""
+def test_active_complete_and_unplugged_lifecycle(monkeypatch) -> None:
+    """Live values zero on completion, totals persist, and unplug clears them."""
     coordinator = _coordinator()
     statuses = iter(
         (
@@ -131,7 +131,7 @@ def test_active_stopped_and_unplugged_lifecycle(monkeypatch) -> None:
     assert coordinator.data["totalChargedEnergy"] == 2.2
 
     coordinator.process_status(_message("charging.session.status", 120))
-    assert coordinator.data["sessionStatus"] == "stopped"
+    assert coordinator.data["sessionStatus"] == "complete"
     assert coordinator.data["power"] == 0
     assert coordinator.data["kilometersChargedPerHour"] == 0
     assert coordinator.data["totalChargedEnergy"] == 2.2
@@ -143,6 +143,174 @@ def test_active_stopped_and_unplugged_lifecycle(monkeypatch) -> None:
     assert coordinator.data["power"] == 0
     assert coordinator.data["totalChargedEnergy"] == 0
     assert "startTime" not in coordinator.data
+
+
+def test_scheduled_status_initializes_zeroes_and_ignores_stale_session_topics(
+    monkeypatch,
+) -> None:
+    """A scheduled charge is plugged in but has no active session values."""
+    coordinator = _coordinator()
+    monkeypatch.setattr(
+        "custom_components.rivian.r2_coordinator.decode_charging_session_status",
+        lambda payload: SimpleNamespace(
+            plug_connection_status_code=2,
+            display_status_code=5,
+            evse_type_code=1,
+        ),
+    )
+    monkeypatch.setattr(
+        "custom_components.rivian.r2_coordinator.decode_charging_session_live_data",
+        lambda payload: SimpleNamespace(
+            total_kwh=2.2,
+            pack_kwh=2.1,
+            thermal_kwh=0.0,
+            outlets_kwh=0.0,
+            system_kwh=0.1,
+            session_duration_minutes=13,
+            time_remaining_minutes=82,
+            range_added_km=10,
+            current_power_kw=10.7,
+            current_range_km_per_hour=60,
+        ),
+    )
+    monkeypatch.setattr(
+        "custom_components.rivian.r2_coordinator.decode_charging_time_estimation",
+        lambda payload: SimpleNamespace(estimated_minutes_remaining=82),
+    )
+    monkeypatch.setattr(
+        "custom_components.rivian.r2_coordinator.decode_charging_graph_global",
+        lambda payload: SimpleNamespace(bars=(SimpleNamespace(start_time_ms=1_000),)),
+    )
+
+    coordinator.process_status(_message("charging.session.status", 100))
+
+    assert coordinator.data["sessionStatus"] == "scheduled"
+    assert coordinator.data["isPluggedIn"] is True
+    assert coordinator.data["isCharging"] is False
+    assert all(
+        coordinator.data[field] == 0 for field in coordinator._SESSION_NUMERIC_FIELDS
+    )
+    assert "startTime" not in coordinator.data
+
+    coordinator.process_live_data(
+        _message("energy_edge_compute.graphs.charge_session_breakdown", 200)
+    )
+    coordinator.process_time_estimation(
+        _message("charging.session.time_estimation", 210)
+    )
+    coordinator.process_graph(
+        _message("energy_edge_compute.graphs.charging_graph_global", 220)
+    )
+
+    assert coordinator.data["totalChargedEnergy"] == 0
+    assert coordinator.data["power"] == 0
+    assert coordinator.data["timeRemaining"] == 0
+    assert "startTime" not in coordinator.data
+
+
+def test_scheduled_to_active_retains_zeroes_until_fresh_values_arrive(
+    monkeypatch,
+) -> None:
+    """An active session starts cleanly when its first energy totals are omitted."""
+    coordinator = _coordinator()
+    statuses = iter(
+        (
+            SimpleNamespace(
+                plug_connection_status_code=2,
+                display_status_code=5,
+                evse_type_code=1,
+            ),
+            SimpleNamespace(
+                plug_connection_status_code=2,
+                display_status_code=3,
+                evse_type_code=1,
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        "custom_components.rivian.r2_coordinator.decode_charging_session_status",
+        lambda payload: next(statuses),
+    )
+    monkeypatch.setattr(
+        "custom_components.rivian.r2_coordinator.decode_charging_session_live_data",
+        lambda payload: SimpleNamespace(
+            total_kwh=None,
+            pack_kwh=None,
+            thermal_kwh=None,
+            outlets_kwh=None,
+            system_kwh=None,
+            session_duration_minutes=1,
+            time_remaining_minutes=103,
+            range_added_km=None,
+            current_power_kw=11.1,
+            current_range_km_per_hour=61,
+        ),
+    )
+    monkeypatch.setattr(
+        "custom_components.rivian.r2_coordinator.decode_charging_graph_global",
+        lambda payload: SimpleNamespace(bars=(SimpleNamespace(start_time_ms=1_000),)),
+    )
+
+    coordinator.process_status(_message("charging.session.status", 100))
+    coordinator.process_status(_message("charging.session.status", 200))
+    coordinator.process_live_data(
+        _message("energy_edge_compute.graphs.charge_session_breakdown", 210)
+    )
+    coordinator.process_graph(
+        _message("energy_edge_compute.graphs.charging_graph_global", 220)
+    )
+
+    assert coordinator.data["sessionStatus"] == "charging"
+    assert coordinator.data["isPluggedIn"] is True
+    assert coordinator.data["isCharging"] is True
+    assert coordinator.data["power"] == 11.1
+    assert coordinator.data["kilometersChargedPerHour"] == 61
+    assert coordinator.data["timeElapsed"] == 60
+    assert coordinator.data["totalChargedEnergy"] == 0
+    assert coordinator.data["packChargedEnergy"] == 0
+    assert coordinator.data["startTime"] == "1970-01-01T00:00:01.000000+0000"
+
+
+def test_freshness_timeout_preserves_known_scheduled_not_charging(monkeypatch) -> None:
+    """A timeout preserves the known false charging boolean for scheduled state."""
+    coordinator = _coordinator()
+    monkeypatch.setattr(
+        "custom_components.rivian.r2_coordinator.decode_charging_session_status",
+        lambda payload: SimpleNamespace(
+            plug_connection_status_code=2,
+            display_status_code=5,
+            evse_type_code=1,
+        ),
+    )
+
+    coordinator.process_status(_message("charging.session.status", 100))
+    coordinator._expire_transient_fields()
+
+    assert coordinator.data["isPluggedIn"] is True
+    assert coordinator.data["isCharging"] is False
+    assert coordinator.data["sessionStatus"] == "unknown"
+
+
+def test_active_startup_initializes_missing_session_values(monkeypatch) -> None:
+    """A restart during charging exposes zeroes until live totals arrive."""
+    coordinator = _coordinator()
+    monkeypatch.setattr(
+        "custom_components.rivian.r2_coordinator.decode_charging_session_status",
+        lambda payload: SimpleNamespace(
+            plug_connection_status_code=2,
+            display_status_code=3,
+            evse_type_code=1,
+        ),
+    )
+
+    coordinator.process_status(_message("charging.session.status", 100))
+
+    assert coordinator.data["sessionStatus"] == "charging"
+    assert coordinator.data["isPluggedIn"] is True
+    assert coordinator.data["isCharging"] is True
+    assert all(
+        coordinator.data[field] == 0 for field in coordinator._SESSION_NUMERIC_FIELDS
+    )
 
 
 def test_graph_uses_earliest_valid_start(monkeypatch) -> None:
@@ -726,6 +894,16 @@ def test_closure_and_lock_derivations_require_correlated_codes() -> None:
     for field in closure_fields.values():
         assert coordinator.get(field) == "closed"
 
+    for code in (3, 4, 5):
+        coordinator._apply_parallax_state(
+            _message("body.closures.states", 200 + code),
+            SimpleNamespace(
+                states=(SimpleNamespace(position_code=1, state_code=code),)
+            ),
+        )
+        assert coordinator.get("doorFrontLeftClosed") == "open"
+        assert coordinator.get("r2Closure1StateCode") == code
+
     coordinator._apply_parallax_state(
         _message("body.closures.states", 300),
         SimpleNamespace(states=(SimpleNamespace(position_code=1, state_code=7),)),
@@ -750,6 +928,20 @@ def test_closure_and_lock_derivations_require_correlated_codes() -> None:
         SimpleNamespace(
             states=tuple(
                 SimpleNamespace(position_code=position, state_code=2)
+                for position in (1, 2, 3, 4, 5, 7)
+            )
+        ),
+    )
+    assert coordinator.get("r2AllLocked") is False
+
+    coordinator._apply_parallax_state(
+        _message("body.locks.states", 525),
+        SimpleNamespace(
+            states=tuple(
+                SimpleNamespace(
+                    position_code=position,
+                    state_code=3 if position == 2 else 1,
+                )
                 for position in (1, 2, 3, 4, 5, 7)
             )
         ),
@@ -914,28 +1106,51 @@ def test_tires_use_per_record_source_timestamp() -> None:
     )
 
 
-def test_unknown_preconditioning_code_is_not_mislabeled() -> None:
-    """Only the correlated active code and empty inactive payload get labels."""
+def test_preconditioning_status_codes_use_protocol_semantics() -> None:
+    """All running phases are active while unsupported codes remain unavailable."""
     coordinator = _vehicle_coordinator()
-    coordinator._apply_parallax_state(
-        _message("comfort.cabin.cabin_preconditioning_status", 100),
-        SimpleNamespace(status_code=2, type_code=1),
-    )
-    assert coordinator.get("cabinPreconditioningStatus") == "active"
+    for code in (1, 2, 3, 4):
+        coordinator._apply_parallax_state(
+            _message("comfort.cabin.cabin_preconditioning_status", code * 100),
+            SimpleNamespace(status_code=code, type_code=1),
+        )
+        assert coordinator.get("cabinPreconditioningStatus") == "active"
 
     coordinator._apply_parallax_state(
-        _message("comfort.cabin.cabin_preconditioning_status", 200),
-        SimpleNamespace(status_code=7, type_code=1),
+        _message("comfort.cabin.cabin_preconditioning_status", 500),
+        SimpleNamespace(status_code=8, type_code=1),
     )
     assert coordinator.get("cabinPreconditioningStatus") is None
     assert coordinator.get_observation("cabinPreconditioningStatus").presence is False
-    assert coordinator.get("r2CabinPreconditioningStatusCode") == 7
+    assert coordinator.get("r2CabinPreconditioningStatusCode") == 8
 
     coordinator._apply_parallax_state(
-        _message("comfort.cabin.cabin_preconditioning_status", 300),
+        _message("comfort.cabin.cabin_preconditioning_status", 600),
         SimpleNamespace(status_code=None, type_code=None),
     )
     assert coordinator.get("cabinPreconditioningStatus") == "inactive"
+
+
+def test_battery_state_exposes_capacity_not_current_energy() -> None:
+    """The fixed pack-size field is published as capacity, not stored energy."""
+    coordinator = _vehicle_coordinator()
+    coordinator._apply_parallax_state(
+        _message("energy.high_voltage.battery_state", 100),
+        SimpleNamespace(
+            soc_percent=80.0,
+            capacity_kwh=91.52,
+            range_km=400.0,
+            cell_average_c=25.0,
+            cell_max_c=26.0,
+            cell_min_c=24.0,
+            power_output_code=1,
+            requires_calibration=False,
+            cold_weather_state_code=1,
+        ),
+    )
+
+    assert coordinator.get("batteryCapacity") == 91.52
+    assert coordinator.get("batteryEnergy") is None
 
 
 def test_r2_startup_accepts_ack_without_a_frame() -> None:

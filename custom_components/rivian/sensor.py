@@ -319,15 +319,6 @@ R2_VEHICLE_SENSORS: Final[tuple[RivianSensorEntityDescription, ...]] = (
         options=["Drive", "Neutral", "Park", "Reverse", "unknown"],
     ),
     RivianSensorEntityDescription(
-        key="battery_energy",
-        field="batteryEnergy",
-        name="Battery Energy",
-        device_class=SensorDeviceClass.ENERGY_STORAGE,
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
-    ),
-    RivianSensorEntityDescription(
         key="battery_cell_average_temperature",
         field="batteryCellAverageTemperature",
         name="Battery Cell Average Temperature",
@@ -420,7 +411,14 @@ R2_CHARGING_SENSORS: Final[tuple[RivianSensorEntityDescription, ...]] = tuple(
         field="sessionStatus",
         translation_key="r2_charging_status",
         device_class=SensorDeviceClass.ENUM,
-        options=["unplugged", "charging", "stopped", "unknown"],
+        options=[
+            "unplugged",
+            "scheduled",
+            "charging",
+            "complete",
+            "stopped",
+            "unknown",
+        ],
     ),
 )
 

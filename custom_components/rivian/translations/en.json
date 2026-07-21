@@ -58,7 +58,9 @@
         "name": "Charging status",
         "state": {
           "unplugged": "Unplugged",
+          "scheduled": "Scheduled",
           "charging": "Charging",
+          "complete": "Complete",
           "stopped": "Stopped",
           "unknown": "Unknown"
         }
