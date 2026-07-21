@@ -66,6 +66,7 @@ def test_r2_inventory_is_stable_and_capability_gated() -> None:
     base_vehicle = {"model": "R2", "supported_features": []}
     assert set(_keys(vehicle_sensor_descriptions(base_vehicle))) == {
         "active_driver",
+        "battery_capacity",
         "battery_level",
         "battery_limit",
         "distance_to_empty",
@@ -129,7 +130,7 @@ def test_r2_inventory_is_stable_and_capability_gated() -> None:
         "battery_cell_average_temperature",
         "battery_cell_max_temperature",
         "battery_cell_min_temperature",
-        "battery_energy",
+        "battery_capacity",
         "cabin_temperature",
         "drive_mode",
         "gear_status",
@@ -166,6 +167,9 @@ def test_registry_cleanup_only_removes_obsolete_exact_r2_entities() -> None:
             entity_id="sensor.r2_battery_level", unique_id="r2-vin-battery_level"
         ),
         SimpleNamespace(
+            entity_id="sensor.r2_battery_energy", unique_id="r2-vin-battery_energy"
+        ),
+        SimpleNamespace(
             entity_id="sensor.r1_charging_cost", unique_id="r1-vin-charging_cost"
         ),
     ]
@@ -189,6 +193,7 @@ def test_registry_cleanup_only_removes_obsolete_exact_r2_entities() -> None:
         "sensor.r2_charging_cost",
         "cover.r2_charge_port",
         "cover.r2_frunk",
+        "sensor.r2_battery_energy",
     ]
 
 
