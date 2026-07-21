@@ -668,6 +668,31 @@ def decode_parallax_payload(rvm: str, payload: str) -> dict[str, Any]:
         decoded["interpreted"] = {"states": states}
     elif rvm in {"dynamics.vehicle.drive_mode", "dynamics.vehicle.gear"}:
         decoded["interpreted"] = {"enum_value": _wire_value(fields, 1)}
+    elif rvm == "dynamics.vehicle.gnss":
+        decoded["interpreted"] = {
+            "latitude": _wire_value(fields, 1),
+            "longitude": _wire_value(fields, 2),
+            "altitude_m": _wire_value(fields, 3),
+            "speed_m_s": _wire_value(fields, 4),
+            "heading_deg": _wire_value(fields, 5),
+            "gps_timestamp_ms": _wire_value(fields, 10),
+        }
+    elif rvm == "navigation.navigation_service.trip_progress":
+        motion_messages = _wire_messages(fields, 6)
+        motion = motion_messages[0] if motion_messages else []
+        coordinate_messages = _wire_messages(motion, 1)
+        coordinates = coordinate_messages[0] if coordinate_messages else []
+        decoded["interpreted"] = {
+            "remaining_distance_m": _wire_value(fields, 4),
+            "remaining_drive_time_s": _wire_value(fields, 5),
+            "motion": {
+                "latitude": _wire_value(coordinates, 1),
+                "longitude": _wire_value(coordinates, 2),
+                "speed_m_s": _wire_value(motion, 2),
+                "heading_deg": _wire_value(motion, 3),
+                "timestamp_ms": _wire_value(motion, 5),
+            },
+        }
     elif rvm == "comfort.cabin.cabin_preconditioning_status":
         decoded["interpreted"] = {
             "status": _wire_value(fields, 1),

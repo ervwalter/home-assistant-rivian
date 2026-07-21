@@ -9,9 +9,10 @@ applications. Production entity changes and remote-command testing are outside
 this phase.
 
 The planned parked-state, sleep, climate, closure, window, lock, gear,
-drive-mode, and home-AC charging captures are complete. Rare states that were
-not naturally available, such as DC fast charging, an active drive, and OTA
-installation, remain follow-ups rather than blockers for the API inventory.
+drive-mode, active-drive, active-navigation, and home-AC charging captures are
+complete. Rare states that were not naturally available, such as DC fast
+charging and OTA installation, remain follow-ups rather than blockers for the
+API inventory.
 
 The local Home Assistant instance authenticates, discovers the R2, loads the
 integration from the working-tree symlink, and survives a full restart without
@@ -241,7 +242,7 @@ guarantee an initial frame for every requested topic.
 | Cabin temperature | `comfort.cabin.cabin_temperatures` | One populated temperature | °C float | Current | Medium; sensor position unconfirmed |
 | Range | `dynamics.vehicle.range` | Populated | km integer | Current | High |
 | Odometer | `dynamics.vehicle.odometer` | Populated | km integer | Prior day | High by legacy correlation |
-| GNSS | `dynamics.vehicle.gnss` | Populated location/altitude fields and GPS-epoch timestamp | degrees/metres/GPS ms | Current | High |
+| GNSS | `dynamics.vehicle.gnss` | Location, altitude, speed, signed heading, and GPS-epoch timestamp | degrees/metres/m/s/GPS ms | Current; about 60-second cadence while driving | High from repeated active-drive frames |
 | Locks | `body.locks.states` | Positions 1, 2, 3, 4, 5, and 7 changed together; 1 locked, 2 unlocked | Nested enums | Current | High for state; positions align with correlated closures but cannot be locked independently |
 | Closures and windows | `body.closures.states` | Four doors, frunk, liftgate, and five windows correlated; 1 open, 2 closed | Nested enums | Current | High for paired transitions; medium-high for baseline-open/close-only cases |
 | Dedicated windows topic | `body.windows.states` | No frame in any of nine physical-correlation sessions | Unknown | Not observed | High that this R2 reports its five windows through `body.closures.states`; not proof the topic is globally unsupported |
@@ -255,7 +256,7 @@ guarantee an initial frame for every requested topic.
 | Drive mode/gear | `dynamics.vehicle.*` | P/R/N/D and all seven displayed drive modes correlated | Protobuf enums | Current | High for direct observed labels; one supervised cycle per state |
 | OTA state/config | `ota.*` | Three topic families populated | Nested messages | Mixed | High availability |
 | Wheels | `vehicle.wheels.vehicle_wheels` | Populated | Nested configuration | Prior day | High availability |
-| Trip/navigation | `navigation.*` | Info empty; progress cached | Nested direct state | Stale | Medium |
+| Trip/navigation | `navigation.*` | Active destination, route metadata, and repeated progress | Nested direct state | Current; progress every five seconds | High for availability and progress fields; nested trip-info labels partly unresolved |
 | Network/power | `vehicle.network.state`, `vehicle.power.state` | Populated | Nested enums | Current | High availability |
 
 Proto3 omits fields at their default values. Therefore a four-byte completed
@@ -419,6 +420,66 @@ same power-state-1 frame and contained no vehicle timestamp newer than the cache
 sleep snapshot, so none of the tested reads produced an observed wake or fresh
 awake telemetry. Power state 3 means ready/awake; the earlier attempts had not
 yet reached API sleep.
+
+## Active-drive and navigation telemetry
+
+Two supervised, read-only captures were taken while the R2 was already being
+driven with an active navigation route. No vehicle command was sent and the
+driver did not interact with the probe. The captures are
+`active-drive-navigation` (45-second subscription window) and
+`active-drive-navigation-long` (90-second subscription window).
+
+`dynamics.vehicle.gnss` has the following directly correlated wire shape on
+this R2:
+
+| Field | Wire type | Direct active-drive meaning |
+| --- | --- | --- |
+| 1 | double | Latitude, degrees |
+| 2 | double | Longitude, degrees |
+| 3 | double | Altitude, metres |
+| 4 | float | Speed, metres per second |
+| 5 | float | Heading/bearing, signed degrees |
+| 6-9 | float | GNSS quality/accuracy values; labels unresolved |
+| 10 | varint | GPS-epoch timestamp, milliseconds |
+
+Three consecutive GNSS frames reported 29.29, 28.60, and 28.33 m/s while the
+heading changed from 89.74 through 85.18 to 72.85 degrees. They arrived almost
+exactly 60 seconds apart. Parked R2 captures omit field 4 at its protobuf
+default and retain field 5, sometimes as a negative signed angle; consumers
+should normalize heading for display without changing the retained raw value.
+
+The same drive directly establishes `vehicle.power.state = 4` as the active
+driving/Go state on R2: it was concurrent with `dynamics.vehicle.gear = 4`
+(Drive), moving GNSS frames, advancing odometer, and decreasing route distance.
+Power states now directly observed on R2 are 1 asleep, 3 ready/awake, and 4 Go.
+
+With a route active, `navigation.navigation_service.trip_progress` emitted every
+five seconds. Top-level field 4 is remaining route distance in metres and field
+5 is remaining drive time in seconds. Over one 90-second window they decreased
+from 20,500 to 17,965 metres and from 896 to 808 seconds. Field 6 is a nested
+live-motion record containing coordinates, speed, heading, and timestamp; its
+speed and heading agreed with the ordinary GNSS topic. This gives active
+navigation a roughly five-second motion source, compared with the route-
+independent GNSS topic's roughly 60-second cadence.
+
+`navigation.navigation_service.trip_info` contained the destination name and
+address, destination coordinates, route legs, route polyline, ETA information,
+route preferences, and optional charging-stop structures. It is direct,
+state-dependent navigation data and must be cleared when the route ends rather
+than retained as stale state. The payload is large and its full nested field
+labels remain a separate decoding task; the destination and route data were
+confirmed without intercepting mobile traffic.
+
+No verified Parallax topic or field supplied instantaneous traction power,
+acceleration, or direct rolling efficiency. `energy.high_voltage.battery_state`
+reported SOC in 0.1-percent steps and usable pack capacity, while odometer
+reported whole kilometres. Those values can support a coarse completed-trip
+estimate (`distance / (SOC delta * usable capacity)`), but their quantization is
+too large for a trustworthy one- or two-minute mi/kWh entity. Rivolt likewise
+derives drive energy from SOC delta and pack capacity rather than a distinct
+Rivian efficiency field. Average/max speed, acceleration, trip distance, and
+trip efficiency can be derived from repeated direct samples, but must be labeled
+as derived rather than Rivian-supplied.
 
 ## Charging analysis
 
@@ -702,7 +763,7 @@ from reviewing those deltas against the supervised physical state.
 | Immediately after charging stops | `charging-stopped-plugged` | 27 entities; seven charging unavailable | Final totals persist; power/time clear; status and graph change |
 | After unplugging | `post-session-unplugged` | 27 registered entities | Live totals/graph cleared; plug/display `(1, 1)`; legacy said `charging_ready` |
 | DC fast charging | Follow-up | Follow-up | Not naturally available |
-| Active drive | Follow-up | Follow-up | Unsafe/unavailable for current session |
+| Active drive and navigation | `active-drive-navigation`, `active-drive-navigation-long` | Production diagnostics observed independently | Direct speed/bearing and Go state; five-second navigation progress with destination, distance, time, and nested motion data |
 | OTA installation | Follow-up | Follow-up | No update pending |
 
 ## Authentication, errors, and rate behavior
@@ -769,8 +830,7 @@ and
 - Determine whether the dedicated driver can ever see completed charging detail;
   compare with an owner capture only if necessary.
 - Capture a registered wallbox account if one becomes available.
-- Capture DC fast charging, an active drive, and OTA installation only when they
-  occur naturally.
+- Capture DC fast charging and OTA installation only when they occur naturally.
 - Investigate current server shapes for settings, connected products, and
   departure schedules with additional one-field validation probes if those
   surfaces become relevant.
@@ -792,7 +852,11 @@ and
 6. Official-app and Roamer coverage is consistent with direct Parallax telemetry
    plus repeated-sample derivation, not with a single comprehensive legacy API.
 7. The core sleep, awake/parked, closure, five-window, lock, gear, all seven
-   drive-mode, climate, charging, stopped, and unplugged transitions are
-   captured. The charge-port flap produced no observed RVM change. Remaining
-   gaps are naturally occurring rare states and unresolved enum details, not
-   discovery of the modern transport.
+   drive-mode, active-drive/navigation, climate, charging, stopped, and
+   unplugged transitions are captured. The charge-port flap produced no
+   observed RVM change. Remaining gaps are naturally occurring rare states and
+   unresolved enum details, not discovery of the modern transport.
+8. Active driving directly supplies speed and bearing through GNSS. An active
+   route additionally supplies five-second remaining-distance/time and nested
+   motion updates plus destination and route metadata. Rolling efficiency is
+   not directly observed and short-window SOC/odometer derivation is too coarse.
