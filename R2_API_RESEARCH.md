@@ -234,18 +234,18 @@ guarantee an initial frame for every requested topic.
 
 | Domain/value | RVM source | Charging-complete observation | Units/shape | Freshness | Confidence |
 | --- | --- | --- | --- | --- | --- |
-| SOC and pack energy | `energy.high_voltage.battery_state` | 84.7%, 91.52 kWh | Double | Current | High |
+| SOC and pack capacity | `energy.high_voltage.battery_state` | 84.7%, 91.52 kWh | Double | Current | High |
 | Battery cell temperature | same | avg 31.4, max 31.6, min 29.0 | °C float | Current | High |
 | Battery cold state | same | Enum value 11 | Protobuf enum | Current | Medium; label unknown |
 | Tire pressures | `dynamics.tires.state` | Position 3 at 2.83 bar matched legacy rear-left; position 4 at 2.90 matched rear-right; positions 1/2 were equal at 2.925 | bar double | Concurrent | High for rear positions and all values; medium for front labels |
 | Cabin temperature | `comfort.cabin.cabin_temperatures` | One populated temperature | °C float | Current | Medium; sensor position unconfirmed |
 | Range | `dynamics.vehicle.range` | Populated | km integer | Current | High |
 | Odometer | `dynamics.vehicle.odometer` | Populated | km integer | Prior day | High by legacy correlation |
-| GNSS | `dynamics.vehicle.gnss` | Populated location/altitude fields | degrees/metres | Current | High |
+| GNSS | `dynamics.vehicle.gnss` | Populated location/altitude fields and GPS-epoch timestamp | degrees/metres/GPS ms | Current | High |
 | Locks | `body.locks.states` | Positions 1, 2, 3, 4, 5, and 7 changed together; 1 locked, 2 unlocked | Nested enums | Current | High for state; positions align with correlated closures but cannot be locked independently |
 | Closures and windows | `body.closures.states` | Four doors, frunk, liftgate, and five windows correlated; 1 open, 2 closed | Nested enums | Current | High for paired transitions; medium-high for baseline-open/close-only cases |
 | Dedicated windows topic | `body.windows.states` | No frame in any of nine physical-correlation sessions | Unknown | Not observed | High that this R2 reports its five windows through `body.closures.states`; not proof the topic is globally unsupported |
-| Plug/session status | `charging.session.status` | `(2, 4, 1)` | Plug/display/EVSE enums | Current | High shape, medium labels |
+| Plug/session status | `charging.session.status` | Unplugged `(1, 1)`, active `(2, 3)`, complete `(2, 4)`, scheduled `(2, 5)`, user-stopped `(2, 8)` | Plug/display/EVSE enums | Current | High from concurrent legacy and physical transitions |
 | Charge target | `charging.session.soc_slider` | 85 | Percent integer | Prior day | High |
 | Trip target | `charging.session.trip_target` | Sentinel 65535 in field 2 | Integer | Prior day | Medium |
 | Charge breakdown | `energy_edge_compute.graphs.charge_session_breakdown` | Default fields omitted; free-session flag set | kWh, min, km, kW, enum | End of session | High shape, requires active sample |
@@ -261,6 +261,18 @@ guarantee an initial frame for every requested topic.
 Proto3 omits fields at their default values. Therefore a four-byte completed
 charge breakdown containing only empty cost and a free-session flag does not mean
 that the other fields were rejected. They need an active-session capture.
+
+The 91.52 kWh battery value remained fixed while state of charge increased and
+matched the legacy `batteryCapacity` value. It is pack capacity, not current
+stored energy. A production entity must therefore use the existing Battery
+Capacity semantic; current stored energy would require a clearly labeled
+derivation and is not supplied directly by this observed field.
+
+The nested GNSS timestamp is milliseconds in the GPS epoch rather than the Unix
+epoch. For the captured software, conversion to Unix milliseconds is
+`gps_ms + 315964800000 - 18000`, where the final term is the current GPS-to-UTC
+leap-second offset. Treating the raw value as Unix time places current samples in
+2016 and can make newer legacy GNSS data accidentally mask the error.
 
 The tire correlation separates direct evidence from external corroboration.
 Concurrent R2 and legacy captures directly establish position 3 as rear-left and
@@ -278,6 +290,13 @@ Observed charging enum integers do not match all older public assumptions: the
 completed charging graph used state value 4, while public captures have observed
 value 3 during active charging. Enum labels must be correlated from live
 transitions instead of hard-coded from an unverified schema.
+
+Concurrent captures established the status combinations used for the initial R2
+implementation. Legacy `chargerState` corroborated scheduled, active, complete,
+and user-stopped transitions, but is not authoritative for physical connection:
+after unplugging it reported `charging_ready` while Parallax `(1, 1)` correctly
+reported unplugged. The legacy feed supplies string semantics and supporting
+timestamps; its values are not numerically interchangeable with Parallax enums.
 
 The supervised physical-correlation sessions established the following direct
 R2 position map. Every listed physical action changed only the identified
@@ -317,6 +336,15 @@ actuated independently, so their individual identity is structurally aligned
 rather than independently transitioned. The legacy `vehicleState` stream
 emitted no corresponding door, window, or closure value during the earlier
 manual transition.
+
+Independent protocol source in
+[Rivolt's Parallax decoder](https://github.com/apohor/rivolt/blob/9d0b3362f4f9a0da6d625009a9dd74c6c64e8a28/internal/rivian/parallax.go)
+corroborates closure states 3/4/5 as ajar/opening/closing, all of which mean not
+closed for an HA binary sensor; lock state 3 is partially unlocked. It also
+identifies cabin preconditioning phases 1 through 4 as running and state 8 as
+unavailable. These labels were not all naturally produced during the supervised
+R2 session, so production retains the raw enum integers in diagnostics and does
+not generalize unrelated model-specific enums.
 
 The stationary, brake-held gear sequence directly mapped
 `dynamics.vehicle.gear` as follows:
