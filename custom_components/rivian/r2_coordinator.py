@@ -487,6 +487,17 @@ class R2ChargingCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 class R2VehicleCoordinator(VehicleCoordinator):
     """Exact-R2 coordinator that augments legacy state with Parallax telemetry."""
 
+    _NAVIGATION_FIELDS = (
+        "navigationDestination",
+        "navigationDestinationLatitude",
+        "navigationDestinationLongitude",
+        "navigationDistanceRemaining",
+        "navigationEta",
+        "navigationTimeRemaining",
+        "navigationTripId",
+    )
+    _NAVIGATION_TRANSIENT_TTL_SECONDS = 20
+
     def __init__(
         self,
         hass: HomeAssistant,
@@ -513,6 +524,7 @@ class R2VehicleCoordinator(VehicleCoordinator):
         self.last_parallax_message_by_rvm: dict[str, datetime] = {}
         self._parallax_unsubscribe: Callable[[], Awaitable[None]] | None = None
         self._unsub_handler: Callable[[], Awaitable[None]] | None = None
+        self._navigation_freshness_timer: asyncio.TimerHandle | None = None
         self._error_count = 0
 
     async def _async_update_data(self) -> dict[str, Any]:
@@ -646,16 +658,36 @@ class R2VehicleCoordinator(VehicleCoordinator):
                         "longitude": decoded.longitude,
                     }
                 values["gnssAltitude"] = decoded.altitude_m
+                values["gnssSpeed"] = decoded.speed_m_s
+                values["gnssBearing"] = (
+                    decoded.heading_deg % 360
+                    if decoded.heading_deg is not None
+                    else None
+                )
+                for field, value in {
+                    "gnssSpeed": decoded.speed_m_s,
+                    "gnssBearing": decoded.heading_deg,
+                }.items():
+                    if value is None:
+                        self._clear_observation(
+                            field,
+                            source=f"parallax:{message.rvm}:absent",
+                            source_timestamp_ms=(
+                                decoded.timestamp_ms or message.timestamp_ms
+                            ),
+                        )
                 if decoded.timestamp_ms is not None:
                     source_timestamps.update(
                         {
                             "gnssLocation": decoded.timestamp_ms,
                             "gnssAltitude": decoded.timestamp_ms,
+                            "gnssSpeed": decoded.timestamp_ms,
+                            "gnssBearing": decoded.timestamp_ms,
                         }
                     )
             case "vehicle.power.state":
                 values = {
-                    "powerState": {1: "sleep", 3: "ready"}.get(
+                    "powerState": {1: "sleep", 3: "ready", 4: "go"}.get(
                         decoded.state_code,
                         "unknown" if decoded.state_code is not None else None,
                     ),
@@ -796,6 +828,77 @@ class R2VehicleCoordinator(VehicleCoordinator):
                 }
             case "comfort.cabin.cabin_temperatures":
                 values = {"cabinClimateInteriorTemperature": decoded.interior_c}
+            case "navigation.navigation_service.trip_progress":
+                progress_timestamp_ms = (
+                    decoded.motion.timestamp_ms
+                    if decoded.motion is not None
+                    else message.timestamp_ms
+                )
+                values = {
+                    "navigationDistanceRemaining": decoded.remaining_distance_m,
+                    "navigationTimeRemaining": decoded.remaining_drive_time_s,
+                }
+                if decoded.motion is not None:
+                    if (
+                        decoded.motion.latitude is not None
+                        and decoded.motion.longitude is not None
+                    ):
+                        values["gnssLocation"] = {
+                            "latitude": decoded.motion.latitude,
+                            "longitude": decoded.motion.longitude,
+                        }
+                    values["gnssSpeed"] = decoded.motion.speed_m_s
+                    values["gnssBearing"] = (
+                        decoded.motion.heading_deg % 360
+                        if decoded.motion.heading_deg is not None
+                        else None
+                    )
+                    source_timestamps.update(
+                        {
+                            "gnssLocation": progress_timestamp_ms,
+                            "gnssSpeed": progress_timestamp_ms,
+                            "gnssBearing": progress_timestamp_ms,
+                        }
+                    )
+                    for field, value in {
+                        "gnssSpeed": decoded.motion.speed_m_s,
+                        "gnssBearing": decoded.motion.heading_deg,
+                    }.items():
+                        if value is None:
+                            self._clear_observation(
+                                field,
+                                source=f"parallax:{message.rvm}:absent",
+                                source_timestamp_ms=progress_timestamp_ms,
+                            )
+                if any(value is not None for value in values.values()):
+                    self._schedule_navigation_freshness_expiry()
+                else:
+                    self._clear_navigation_state(
+                        source=f"parallax:{message.rvm}:empty",
+                        source_timestamp_ms=message.timestamp_ms,
+                    )
+            case "navigation.navigation_service.trip_info":
+                if decoded.trip_id is None:
+                    self._clear_navigation_state(
+                        source=f"parallax:{message.rvm}:ended",
+                        source_timestamp_ms=message.timestamp_ms,
+                    )
+                else:
+                    values = {
+                        "navigationTripId": decoded.trip_id,
+                        "navigationDestination": decoded.destination_name,
+                        "navigationDestinationLatitude": (decoded.destination_latitude),
+                        "navigationDestinationLongitude": (
+                            decoded.destination_longitude
+                        ),
+                        "navigationEta": (
+                            datetime.fromtimestamp(
+                                decoded.eta_timestamp_ms / 1000, timezone.utc
+                            )
+                            if decoded.eta_timestamp_ms is not None
+                            else None
+                        ),
+                    }
         for field, value in values.items():
             if value is not None:
                 self._record_observation(
@@ -808,6 +911,64 @@ class R2VehicleCoordinator(VehicleCoordinator):
                 )
         if values:
             self.async_set_updated_data(dict(self.data or {}))
+
+    def _clear_navigation_state(
+        self,
+        *,
+        source: str,
+        source_timestamp_ms: int | None,
+        received_at: datetime | None = None,
+    ) -> None:
+        """Clear active-route values while retaining the last vehicle position."""
+        received_at = received_at or datetime.now(timezone.utc)
+        for field in self._NAVIGATION_FIELDS:
+            self.observations.lifecycle_reset(
+                field,
+                None,
+                presence=False,
+                source=source,
+                source_timestamp_ms=source_timestamp_ms,
+                received_at=received_at,
+            )
+            self.data.pop(field, None)
+        for field in ("gnssSpeed", "gnssBearing"):
+            observation = self.observations.get_observation(field)
+            if observation is None or "trip_progress" not in observation.source:
+                continue
+            self.observations.lifecycle_reset(
+                field,
+                None,
+                presence=False,
+                source=source,
+                source_timestamp_ms=source_timestamp_ms,
+                received_at=received_at,
+            )
+            self.data.pop(field, None)
+        self._cancel_navigation_freshness_timer()
+        self.async_set_updated_data(dict(self.data))
+
+    @callback
+    def _expire_navigation_state(self) -> None:
+        """Expire active-route values when expected progress frames stop."""
+        self._navigation_freshness_timer = None
+        self._clear_navigation_state(
+            source="navigation_freshness_timeout",
+            source_timestamp_ms=None,
+        )
+
+    def _schedule_navigation_freshness_expiry(self) -> None:
+        """Expire navigation after four expected five-second update periods."""
+        self._cancel_navigation_freshness_timer()
+        self._navigation_freshness_timer = self.hass.loop.call_later(
+            self._NAVIGATION_TRANSIENT_TTL_SECONDS,
+            self._expire_navigation_state,
+        )
+
+    def _cancel_navigation_freshness_timer(self) -> None:
+        """Cancel the pending active-route freshness callback."""
+        if self._navigation_freshness_timer is not None:
+            self._navigation_freshness_timer.cancel()
+            self._navigation_freshness_timer = None
 
     def _record_observation(
         self,
@@ -921,6 +1082,7 @@ class R2VehicleCoordinator(VehicleCoordinator):
 
     async def async_shutdown(self) -> None:
         """Unsubscribe the R2 stream before closing the shared monitor."""
+        self._cancel_navigation_freshness_timer()
         if self._parallax_unsubscribe is not None:
             await self._parallax_unsubscribe()
             self._parallax_unsubscribe = None

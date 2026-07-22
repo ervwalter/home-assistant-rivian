@@ -43,7 +43,12 @@ from .entity import (
     RivianVehicleEntity,
     RivianWallboxEntity,
 )
-from .r2 import R2_PX_SENSOR_KEYS, R2_SENSOR_KEYS, is_r2_vehicle
+from .r2 import (
+    R2_NAVIGATION_SENSOR_KEYS,
+    R2_PX_SENSOR_KEYS,
+    R2_SENSOR_KEYS,
+    is_r2_vehicle,
+)
 from .r2_coordinator import R2ChargingCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -74,6 +79,12 @@ def vehicle_sensor_descriptions(
                     if description.key in R2_PX_SENSOR_KEYS
                 )
                 + R2_VEHICLE_SENSORS
+            )
+        if {"ACTIVE_TRIP", "TRIP_NAV_PX"} & set(vehicle.get("supported_features", [])):
+            descriptions += tuple(
+                description
+                for description in R2_NAVIGATION_SENSORS
+                if description.key in R2_NAVIGATION_SENSOR_KEYS
             )
         return descriptions
     return tuple(
@@ -344,6 +355,38 @@ R2_VEHICLE_SENSORS: Final[tuple[RivianSensorEntityDescription, ...]] = (
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
+    ),
+)
+
+R2_NAVIGATION_SENSORS: Final[tuple[RivianSensorEntityDescription, ...]] = (
+    RivianSensorEntityDescription(
+        key="navigation_destination",
+        field="navigationDestination",
+        name="Navigation Destination",
+        icon="mdi:map-marker",
+    ),
+    RivianSensorEntityDescription(
+        key="navigation_eta",
+        field="navigationEta",
+        name="Navigation Estimated Arrival",
+        device_class=SensorDeviceClass.TIMESTAMP,
+    ),
+    RivianSensorEntityDescription(
+        key="navigation_distance_remaining",
+        field="navigationDistanceRemaining",
+        name="Navigation Distance Remaining",
+        device_class=SensorDeviceClass.DISTANCE,
+        native_unit_of_measurement=UnitOfLength.METERS,
+        suggested_unit_of_measurement=UnitOfLength.MILES,
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    RivianSensorEntityDescription(
+        key="navigation_time_remaining",
+        field="navigationTimeRemaining",
+        name="Navigation Time Remaining",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.MEASUREMENT,
     ),
 )
 
