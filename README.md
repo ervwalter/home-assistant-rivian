@@ -96,6 +96,14 @@ unrecognized values appear as unknown instead of being assigned a guessed label.
 The charge-port door is not created because it was not exposed by the observed
 R2 telemetry topics.
 
+Direct R2 motion telemetry supplies speed, bearing, and the existing In Use
+state. When the vehicle advertises active-trip support, the integration also
+creates destination, estimated-arrival, remaining-distance, and
+remaining-drive-time sensors. While a route is active, its five-second position
+updates take precedence over the slower general GNSS feed for the device
+tracker. Route-only values expire when progress stops, while the tracker keeps
+the last valid position.
+
 R2 charging entities include connection and charging status, total energy and
 the battery/thermal/outlet/system breakdown, range added, power, rate, elapsed
 and remaining time, and session start time when a valid charging graph is
@@ -174,6 +182,10 @@ and pairing path differs from the supported R1 path.
 | Limited Regenerative Braking (Cold)                 | Sensor         |                                        |
 | Location                                            | Device Tracker |                                        |
 | Locked State                                        | Binary Sensor  | Locked/unlocked status of all closures |
+| Navigation Destination                              | Sensor         | R2 active routes only                  |
+| Navigation Distance Remaining                       | Sensor         | R2 active routes only                  |
+| Navigation Estimated Arrival                        | Sensor         | R2 active routes only                  |
+| Navigation Time Remaining                           | Sensor         | R2 active routes only                  |
 | Odometer                                            | Sensor         |                                        |
 | Pet Mode                                            | Binary Sensor  | Running/not running status             |
 | Pet Mode Temperature Status                         | Sensor         |                                        |
