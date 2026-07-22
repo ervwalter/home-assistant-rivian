@@ -1934,7 +1934,8 @@ async def run_capture(args: argparse.Namespace) -> Path:
         ),
     }
 
-    async with aiohttp.ClientSession() as session:
+    connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
+    async with aiohttp.ClientSession(connector=connector) as session:
         client = Rivian(
             request_timeout=30,
             session=session,
@@ -2117,7 +2118,8 @@ async def run_correlation(args: argparse.Namespace) -> Path:
         "correlation": None,
     }
 
-    async with aiohttp.ClientSession() as session:
+    connector = aiohttp.TCPConnector(resolver=aiohttp.ThreadedResolver())
+    async with aiohttp.ClientSession(connector=connector) as session:
         client = Rivian(
             request_timeout=30,
             session=session,

@@ -26,7 +26,7 @@ Assistant instance was changed.
 | --- | --- |
 | Base repository commit | `4279cc16903cc3adf571a74fe591296c0cf36825` |
 | Research branch | `r2-api-research` |
-| Research date | 2026-07-19 through 2026-07-20 |
+| Research date | 2026-07-19 through 2026-07-22 |
 | Devcontainer Python | 3.13.5 |
 | Home Assistant | 2026.2.3 |
 | `rivian-python-client` | 2.0.0 |
@@ -399,6 +399,26 @@ temperature field 3 updated every 1–7 seconds and fell from approximately 28.2
 to 27.8°C. The legacy `vehicleState` subscription emitted none of its climate,
 preconditioning, defrost, seat, steering-wheel, or pet-mode fields during the
 same interval.
+
+A later 30-second capture while the R2 was already being driven established the
+additional comfort payload shapes without sending commands. HVAC settings field
+1 was the cabin target temperature (23.5°C while driving, compared with 22.0°C
+in parked captures). Cabin temperatures continued to update field 3. The
+preconditioning status was code 8 while ordinary driving HVAC was available in
+the vehicle; this code means remote preconditioning is unavailable, not that
+the cabin-temperature feed or normal driving HVAC has failed. Production can
+therefore report remote preconditioning off for code 8 only while power is `go`
+or the selected gear is Reverse, Neutral, or Drive; code 8 remains unavailable
+without that independent in-use evidence.
+
+The same capture observed Pet Mode state field 1 as code 2, ventilation setting
+field 1 as code 1, climate-hold duration field 1 as 7,200 seconds, a nested
+climate-hold end timestamp in field 4, defrost/defog field 1 as code 4, and seven
+seat-conditioning records containing component and conditioning-type codes.
+Public decoder evidence maps Pet Mode codes 0/1/2/3 to off/on/disabled/faulty.
+Seat positions, conditioning types, levels, defrost states, and climate-hold
+enums were not independently transitioned, so those integers remain raw
+diagnostic/research evidence rather than production entity labels.
 
 The unplugged transition produced plug/display values `(1, 1)` with no EVSE
 field, compared with `(2, 4, 1)` at charging complete. The same capture reported
