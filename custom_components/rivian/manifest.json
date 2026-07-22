@@ -10,7 +10,7 @@
   "issue_tracker": "https://github.com/bretterer/home-assistant-rivian/issues",
   "loggers": ["custom_components.rivian", "rivian"],
   "requirements": [
-    "rivian-python-client[ble] @ https://github.com/ervwalter/rivian-python-client/releases/download/2.1.0b3%2Br2.1/rivian_python_client-2.1.0b3%2Br2.1-py3-none-any.whl#sha256=0a7a76ad1c05eeb23b6210decab8686e229252ef5248c11066844d4ea22baf94"
+    "rivian-python-client[ble] @ https://github.com/ervwalter/rivian-python-client/releases/download/2.1.0b4%2Br2.1/rivian_python_client-2.1.0b4%2Br2.1-py3-none-any.whl#sha256=0d9d73220bfeaa7f07942ce13d30b117da4f808104f6f670e5b26fcf87fc02af"
   ],
   "version": "0.0.0"
 }
