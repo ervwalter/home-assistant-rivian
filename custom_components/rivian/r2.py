@@ -10,6 +10,10 @@ from typing import Any
 R2_MODEL = "R2"
 
 R2_PARALLAX_RVMS_BY_FEATURE = {
+    "ACTIVE_TRIP": {
+        "navigation.navigation_service.trip_info",
+        "navigation.navigation_service.trip_progress",
+    },
     "CHARG_DATA_PX": {
         "charging.session.status",
         "charging.session.time_estimation",
@@ -30,6 +34,10 @@ R2_PARALLAX_RVMS_BY_FEATURE = {
         "energy.high_voltage.battery_state",
         "vehicle.power.state",
     },
+    "TRIP_NAV_PX": {
+        "navigation.navigation_service.trip_info",
+        "navigation.navigation_service.trip_progress",
+    },
 }
 
 R2_SENSOR_KEYS = {
@@ -45,12 +53,21 @@ R2_SENSOR_KEYS = {
 
 R2_PX_SENSOR_KEYS = {
     "altitude",
+    "bearing",
     "cabin_temperature",
     "power_state",
+    "speed",
     "tire_pressure_front_left",
     "tire_pressure_front_right",
     "tire_pressure_rear_left",
     "tire_pressure_rear_right",
+}
+
+R2_NAVIGATION_SENSOR_KEYS = {
+    "navigation_destination",
+    "navigation_distance_remaining",
+    "navigation_eta",
+    "navigation_time_remaining",
 }
 
 R2_CLOSURE_FIELDS = {
