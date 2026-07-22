@@ -8,6 +8,7 @@ from typing import Any, Final
 from rivian import VehicleCommand
 
 from homeassistant.components.climate import (
+    PRECISION_TENTHS,
     PRECISION_WHOLE,
     ClimateEntity,
     ClimateEntityDescription,
@@ -17,12 +18,13 @@ from homeassistant.components.climate import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import ATTR_COORDINATOR, ATTR_VEHICLE, DOMAIN
 from .coordinator import VehicleCoordinator
-from .entity import RivianVehicleControlEntity
-from .r2 import supports_vehicle_control
+from .entity import RivianVehicleControlEntity, RivianVehicleEntity
+from .r2 import is_r2_vehicle, supports_vehicle_control
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,12 +43,72 @@ async def async_setup_entry(
     vehicles: dict[str, dict[str, Any]] = data[ATTR_VEHICLE]
     coordinators: dict[str, VehicleCoordinator] = data[ATTR_COORDINATOR][ATTR_VEHICLE]
 
-    entities = [
-        RivianClimateEntity(coordinators[vehicle_id], entry, CLIMATE, vehicle)
-        for vehicle_id, vehicle in vehicles.items()
-        if supports_vehicle_control(vehicle)
-    ]
+    entities: list[ClimateEntity] = []
+    for vehicle_id, vehicle in vehicles.items():
+        if is_r2_vehicle(vehicle):
+            if "PX_STATE_ALL" in vehicle.get("supported_features", []):
+                entities.append(
+                    R2ReadOnlyClimateEntity(
+                        coordinators[vehicle_id], entry, CLIMATE, vehicle
+                    )
+                )
+        elif supports_vehicle_control(vehicle):
+            entities.append(
+                RivianClimateEntity(coordinators[vehicle_id], entry, CLIMATE, vehicle)
+            )
     async_add_entities(entities)
+
+
+class R2ReadOnlyClimateEntity(RivianVehicleEntity, ClimateEntity):
+    """Read-only R2 cabin temperature and remote-preconditioning state."""
+
+    _attr_max_temp = 29
+    _attr_min_temp = 16
+    _attr_precision = PRECISION_TENTHS
+    _attr_supported_features = ClimateEntityFeature(0)
+    _attr_target_temperature_step = 0.5
+    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+
+    @property
+    def available(self) -> bool:
+        """Return whether all state needed by the read-only entity is known."""
+        return (
+            super().available
+            and self.current_temperature is not None
+            and self.target_temperature is not None
+            and self.hvac_mode is not None
+        )
+
+    @property
+    def current_temperature(self) -> float | None:
+        """Return the observed cabin temperature."""
+        return self._get_value("cabinClimateInteriorTemperature")
+
+    @property
+    def target_temperature(self) -> float | None:
+        """Return the observed cabin target temperature."""
+        return self._get_value("cabinClimateDriverTemperature")
+
+    @property
+    def hvac_mode(self) -> HVACMode | None:
+        """Represent remote preconditioning without implying normal HVAC state."""
+        return {
+            "active": HVACMode.HEAT_COOL,
+            "inactive": HVACMode.OFF,
+        }.get(self._get_value("cabinPreconditioningStatus"))
+
+    @property
+    def hvac_modes(self) -> list[HVACMode]:
+        """Expose only the observed mode so the entity remains read-only."""
+        return [mode] if (mode := self.hvac_mode) is not None else []
+
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        """Reject control attempts until the R2 command protocol is supported."""
+        raise HomeAssistantError("R2 cabin climate control is not supported")
+
+    async def async_set_temperature(self, **kwargs: Any) -> None:
+        """Reject control attempts until the R2 command protocol is supported."""
+        raise HomeAssistantError("R2 cabin climate control is not supported")
 
 
 class RivianClimateEntity(RivianVehicleControlEntity, ClimateEntity):

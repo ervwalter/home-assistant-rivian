@@ -92,6 +92,7 @@ def test_r2_inventory_is_stable_and_capability_gated() -> None:
         "door_rear_left_closed",
         "door_rear_right_closed",
         "locked_state",
+        "pet_mode_status",
         "window_front_left_closed",
         "window_front_right_closed",
         "window_liftgate_closed",
@@ -134,6 +135,7 @@ def test_r2_inventory_is_stable_and_capability_gated() -> None:
         "battery_cell_min_temperature",
         "battery_capacity",
         "cabin_temperature",
+        "driver_temperature",
         "drive_mode",
         "gear_status",
         "power_state",
@@ -212,8 +214,8 @@ def test_registry_cleanup_only_removes_obsolete_exact_r2_entities() -> None:
     ]
 
 
-def test_every_control_platform_emits_no_r2_entities() -> None:
-    """An old saved phone identity cannot enable the R1 command path on R2."""
+def test_r2_only_emits_the_read_only_climate_entity_on_control_platforms() -> None:
+    """An old phone identity cannot enable R1 commands on an R2."""
     vehicle = {
         "id": "vehicle",
         "vin": "vin",
@@ -230,22 +232,42 @@ def test_every_control_platform_emits_no_r2_entities() -> None:
         with patch.dict(sys.modules, {"homeassistant.components.bluetooth": bluetooth}):
             button = import_module("custom_components.rivian.button")
         entry = SimpleNamespace(entry_id="entry")
+        climate_values = {
+            "cabinClimateInteriorTemperature": 24.0,
+            "cabinClimateDriverTemperature": 22.5,
+            "cabinPreconditioningStatus": "inactive",
+        }
+        coordinator = SimpleNamespace(
+            get=climate_values.get,
+            is_field_available=lambda field: field in climate_values,
+        )
         hass = SimpleNamespace(
             data={
                 DOMAIN: {
                     entry.entry_id: {
                         ATTR_VEHICLE: {vehicle["id"]: vehicle},
                         ATTR_COORDINATOR: {
-                            ATTR_VEHICLE: {vehicle["id"]: object()},
+                            ATTR_VEHICLE: {vehicle["id"]: coordinator},
                             ATTR_USER: object(),
                         },
                     }
                 }
             }
         )
-        for platform in (button, climate, cover, lock, number, select, switch):
+        for platform in (button, cover, lock, number, select, switch):
             added = []
             await platform.async_setup_entry(hass, entry, added.extend)
             assert added == [], platform.__name__
+
+        added = []
+        await climate.async_setup_entry(hass, entry, added.extend)
+        assert len(added) == 1
+        assert isinstance(added[0], climate.R2ReadOnlyClimateEntity)
+        assert added[0].supported_features == 0
+        assert added[0].current_temperature == 24.0
+        assert added[0].target_temperature == 22.5
+        assert added[0].hvac_mode == "off"
+        assert added[0].hvac_modes == ["off"]
+        assert added[0].available
 
     asyncio.run(run_setup_checks())

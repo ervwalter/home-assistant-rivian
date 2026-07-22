@@ -604,6 +604,25 @@ class R2VehicleCoordinator(VehicleCoordinator):
             return normalized if normalized in R2_GEAR_STATES.values() else "unknown"
         return value
 
+    def _preconditioning_state(
+        self,
+        status_code: int | None,
+        *,
+        power_state: str | None = None,
+        gear_state: str | None = None,
+    ) -> str | None:
+        """Translate verified R2 preconditioning phases into HA semantics."""
+        if status_code in {1, 2, 3, 4}:
+            return "active"
+        if status_code is None:
+            return "inactive"
+        if status_code == 8:
+            power_state = power_state or self.get("powerState")
+            gear_state = gear_state or self.get("gearStatus")
+            if power_state == "go" or gear_state in {"Drive", "Neutral", "Reverse"}:
+                return "inactive"
+        return None
+
     @callback
     def _process_parallax_message(self, message: ParallaxMessage) -> None:
         """Route an R2 message without logging its raw protobuf payload."""
@@ -628,6 +647,7 @@ class R2VehicleCoordinator(VehicleCoordinator):
         """Adapt typed Parallax state to stable Home Assistant field semantics."""
         values: dict[str, Any] = {}
         source_timestamps: dict[str, int] = {}
+        clear_preconditioning = False
         match message.rvm:
             case "energy.high_voltage.battery_state":
                 values = {
@@ -686,22 +706,40 @@ class R2VehicleCoordinator(VehicleCoordinator):
                         }
                     )
             case "vehicle.power.state":
+                power_state = {1: "sleep", 3: "ready", 4: "go"}.get(
+                    decoded.state_code,
+                    "unknown" if decoded.state_code is not None else None,
+                )
                 values = {
-                    "powerState": {1: "sleep", 3: "ready", 4: "go"}.get(
-                        decoded.state_code,
-                        "unknown" if decoded.state_code is not None else None,
-                    ),
+                    "powerState": power_state,
                     "r2PowerStateCode": decoded.state_code,
                 }
+                if self.get("r2CabinPreconditioningStatusCode") == 8:
+                    preconditioning_state = self._preconditioning_state(
+                        8, power_state=power_state
+                    )
+                    if preconditioning_state is None:
+                        clear_preconditioning = True
+                    else:
+                        values["cabinPreconditioningStatus"] = preconditioning_state
             case "dynamics.vehicle.gear":
+                gear_state = (
+                    R2_GEAR_STATES.get(decoded.state_code, "unknown")
+                    if decoded.state_code is not None
+                    else None
+                )
                 values = {
-                    "gearStatus": (
-                        R2_GEAR_STATES.get(decoded.state_code, "unknown")
-                        if decoded.state_code is not None
-                        else None
-                    ),
+                    "gearStatus": gear_state,
                     "r2GearStateCode": decoded.state_code,
                 }
+                if self.get("r2CabinPreconditioningStatusCode") == 8:
+                    preconditioning_state = self._preconditioning_state(
+                        8, gear_state=gear_state
+                    )
+                    if preconditioning_state is None:
+                        clear_preconditioning = True
+                    else:
+                        values["cabinPreconditioningStatus"] = preconditioning_state
             case "dynamics.vehicle.drive_mode":
                 values = {
                     "driveMode": (
@@ -811,23 +849,73 @@ class R2VehicleCoordinator(VehicleCoordinator):
                             window.state_code
                         )
             case "comfort.cabin.cabin_preconditioning_status":
-                if decoded.status_code not in (None, 1, 2, 3, 4):
+                preconditioning_state = self._preconditioning_state(decoded.status_code)
+                clear_preconditioning = preconditioning_state is None
+                if decoded.status_code is None:
                     self._clear_observation(
-                        "cabinPreconditioningStatus",
-                        source=f"parallax:{message.rvm}",
+                        "r2CabinPreconditioningStatusCode",
+                        source=f"parallax:{message.rvm}:absent",
+                        source_timestamp_ms=message.timestamp_ms,
+                    )
+                if decoded.type_code is None:
+                    self._clear_observation(
+                        "r2CabinPreconditioningTypeCode",
+                        source=f"parallax:{message.rvm}:absent",
                         source_timestamp_ms=message.timestamp_ms,
                     )
                 values = {
-                    "cabinPreconditioningStatus": "active"
-                    if decoded.status_code in {1, 2, 3, 4}
-                    else "inactive"
-                    if decoded.status_code is None
-                    else None,
+                    "cabinPreconditioningStatus": preconditioning_state,
                     "r2CabinPreconditioningStatusCode": decoded.status_code,
                     "r2CabinPreconditioningTypeCode": decoded.type_code,
                 }
             case "comfort.cabin.cabin_temperatures":
                 values = {"cabinClimateInteriorTemperature": decoded.interior_c}
+            case "comfort.cabin.hvac_settings_status":
+                values = {"cabinClimateDriverTemperature": decoded.target_temperature_c}
+            case "comfort.cabin.pet_mode_status":
+                pet_mode_state = (
+                    "On"
+                    if decoded.state_code == 1
+                    else "Off"
+                    if decoded.state_code in {None, 0, 2}
+                    else None
+                )
+                if pet_mode_state is None:
+                    self._clear_observation(
+                        "petModeStatus",
+                        source=f"parallax:{message.rvm}",
+                        source_timestamp_ms=message.timestamp_ms,
+                    )
+                values = {
+                    "petModeStatus": pet_mode_state,
+                    "r2PetModeStatusCode": decoded.state_code,
+                    "r2PetModeTemperatureStatusCode": (decoded.temperature_status_code),
+                }
+            case "comfort.cabin.cabin_ventilation_setting":
+                values = {"r2CabinVentilationSettingCode": decoded.setting_code}
+            case "comfort.cabin.climate_hold_setting":
+                values = {"r2ClimateHoldDurationSeconds": decoded.duration_seconds}
+            case "comfort.cabin.climate_hold_status":
+                values = {
+                    "r2ClimateHoldStatusCode": decoded.status_code,
+                    "r2ClimateHoldAvailabilityCode": decoded.availability_code,
+                    "r2ClimateHoldUnavailabilityReasonCode": (
+                        decoded.unavailability_reason_code
+                    ),
+                    "r2ClimateHoldEndTimestampMs": decoded.hold_end_timestamp_ms,
+                }
+            case "comfort.cabin.defrost_defog_status":
+                values = {"r2DefrostDefogStatusCode": decoded.status_code}
+            case "comfort.cabin.seat_conditioning_status":
+                values = {
+                    "r2SeatConditioningStates": [
+                        {
+                            "component_code": state.component_code,
+                            "conditioning_type_code": state.conditioning_type_code,
+                        }
+                        for state in decoded.states
+                    ]
+                }
             case "navigation.navigation_service.trip_progress":
                 progress_timestamp_ms = (
                     decoded.motion.timestamp_ms
@@ -899,6 +987,12 @@ class R2VehicleCoordinator(VehicleCoordinator):
                             else None
                         ),
                     }
+        if clear_preconditioning:
+            self._clear_observation(
+                "cabinPreconditioningStatus",
+                source=f"parallax:{message.rvm}",
+                source_timestamp_ms=message.timestamp_ms,
+            )
         for field, value in values.items():
             if value is not None:
                 self._record_observation(

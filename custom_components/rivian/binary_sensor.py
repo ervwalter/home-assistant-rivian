@@ -140,6 +140,13 @@ R2_BINARY_SENSORS = (
         on_value="active",
     ),
     RivianBinarySensorEntityDescription(
+        key="pet_mode_status",
+        field="petModeStatus",
+        name="Pet Mode",
+        icon="mdi:paw",
+        on_value="On",
+    ),
+    RivianBinarySensorEntityDescription(
         key="charger_state",
         field="isCharging",
         name="Charging Status",
