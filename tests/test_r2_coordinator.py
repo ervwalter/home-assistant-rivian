@@ -36,7 +36,7 @@ class _Loop:
 
     def call_later(self, delay: float, callback) -> _Timer:
         """Capture a delayed callback without waiting."""
-        assert delay == 90
+        assert delay in {20, 90}
         self.timer = _Timer(callback)
         return self.timer
 
@@ -75,6 +75,8 @@ def _vehicle_coordinator() -> R2VehicleCoordinator:
     coordinator.charging_coordinator = SimpleNamespace(
         adjust_update_interval=lambda **kwargs: None
     )
+    coordinator._navigation_freshness_timer = None
+    coordinator.hass = SimpleNamespace(loop=_Loop())
     coordinator.async_set_updated_data = lambda data: setattr(coordinator, "data", data)
     return coordinator
 
@@ -1017,6 +1019,18 @@ def test_gear_and_drive_mode_use_correlated_labels_with_raw_fallbacks() -> None:
     assert coordinator.get("r2DriveModeCode") == 99
 
 
+def test_go_power_state_drives_existing_in_use_entity() -> None:
+    """The correlated R2 driving power code uses the existing R1 semantic."""
+    coordinator = _vehicle_coordinator()
+    coordinator._apply_parallax_state(
+        _message("vehicle.power.state", 100),
+        SimpleNamespace(state_code=4),
+    )
+
+    assert coordinator.get("powerState") == "go"
+    assert coordinator.get("r2PowerStateCode") == 4
+
+
 def test_r1_and_r2_observation_access() -> None:
     """Shared accessors preserve R1 wrappers and expose R2 metadata."""
     r1 = object.__new__(VehicleCoordinator)
@@ -1049,6 +1063,8 @@ def test_gnss_uses_nested_source_timestamp() -> None:
             latitude=1.0,
             longitude=2.0,
             altitude_m=3.0,
+            speed_m_s=20.0,
+            heading_deg=-45.0,
             timestamp_ms=100,
         ),
     )
@@ -1058,12 +1074,115 @@ def test_gnss_uses_nested_source_timestamp() -> None:
             latitude=4.0,
             longitude=5.0,
             altitude_m=6.0,
+            speed_m_s=30.0,
+            heading_deg=90.0,
             timestamp_ms=90,
         ),
     )
 
     assert coordinator.get_location()["latitude"] == 1.0
     assert coordinator.get_observation("gnssLocation").source_timestamp_ms == 100
+    assert coordinator.get("gnssSpeed") == 20.0
+    assert coordinator.get("gnssBearing") == 315.0
+
+
+def test_navigation_progress_drives_fresher_tracker_and_route_entities() -> None:
+    """Five-second trip motion supersedes older GNSS and expires as one unit."""
+    coordinator = _vehicle_coordinator()
+    coordinator._apply_parallax_state(
+        _message("dynamics.vehicle.gnss", 100),
+        SimpleNamespace(
+            latitude=1.0,
+            longitude=2.0,
+            altitude_m=3.0,
+            speed_m_s=10.0,
+            heading_deg=15.0,
+            timestamp_ms=100,
+        ),
+    )
+    coordinator._apply_parallax_state(
+        _message("navigation.navigation_service.trip_info", 180),
+        SimpleNamespace(
+            trip_id="trip",
+            destination_name="Home",
+            destination_latitude=4.0,
+            destination_longitude=5.0,
+            eta_timestamp_ms=1_800_000,
+        ),
+    )
+    coordinator._apply_parallax_state(
+        _message("navigation.navigation_service.trip_progress", 200),
+        SimpleNamespace(
+            remaining_distance_m=12_345.0,
+            remaining_drive_time_s=678.0,
+            motion=SimpleNamespace(
+                latitude=6.0,
+                longitude=7.0,
+                speed_m_s=25.0,
+                heading_deg=-90.0,
+                timestamp_ms=210,
+            ),
+        ),
+    )
+    coordinator._apply_parallax_state(
+        _message("dynamics.vehicle.gnss", 300),
+        SimpleNamespace(
+            latitude=8.0,
+            longitude=9.0,
+            altitude_m=10.0,
+            speed_m_s=5.0,
+            heading_deg=45.0,
+            timestamp_ms=150,
+        ),
+    )
+
+    assert coordinator.get_location()["latitude"] == 6.0
+    assert coordinator.get("gnssSpeed") == 25.0
+    assert coordinator.get("gnssBearing") == 270.0
+    assert coordinator.get("navigationDestination") == "Home"
+    assert coordinator.get("navigationDistanceRemaining") == 12_345.0
+    assert coordinator.get("navigationTimeRemaining") == 678.0
+    assert coordinator.get("navigationEta").timestamp() == 1800
+
+    timer = coordinator.hass.loop.timer
+    assert timer is not None
+    timer.callback()
+
+    assert coordinator.get_location()["latitude"] == 6.0
+    assert coordinator.get("gnssSpeed") is None
+    assert coordinator.get("gnssBearing") is None
+    assert coordinator.get("navigationDestination") is None
+    assert coordinator.get("navigationDistanceRemaining") is None
+
+
+def test_empty_trip_info_clears_route_but_preserves_non_navigation_motion() -> None:
+    """A no-route snapshot clears trip entities without erasing ordinary GNSS."""
+    coordinator = _vehicle_coordinator()
+    coordinator._apply_parallax_state(
+        _message("dynamics.vehicle.gnss", 100),
+        SimpleNamespace(
+            latitude=1.0,
+            longitude=2.0,
+            altitude_m=3.0,
+            speed_m_s=4.0,
+            heading_deg=5.0,
+            timestamp_ms=100,
+        ),
+    )
+    coordinator._apply_parallax_state(
+        _message("navigation.navigation_service.trip_info", 200),
+        SimpleNamespace(
+            trip_id=None,
+            destination_name=None,
+            destination_latitude=None,
+            destination_longitude=None,
+            eta_timestamp_ms=None,
+        ),
+    )
+
+    assert coordinator.get_location()["latitude"] == 1.0
+    assert coordinator.get("gnssSpeed") == 4.0
+    assert coordinator.get("gnssBearing") == 5.0
 
 
 def test_tires_use_per_record_source_timestamp() -> None:

@@ -33,6 +33,17 @@ def test_parallax_topics_are_feature_gated() -> None:
     assert "body.windows.states" not in state_only
     assert "charging.session.status" not in state_only
 
+    navigation = r2_parallax_rvms(
+        {"model": "R2", "supported_features": ["ACTIVE_TRIP"]}
+    )
+    assert navigation == {
+        "navigation.navigation_service.trip_info",
+        "navigation.navigation_service.trip_progress",
+    }
+    assert navigation == r2_parallax_rvms(
+        {"model": "R2", "supported_features": ["TRIP_NAV_PX"]}
+    )
+
 
 def test_observations_preserve_explicit_zero_and_false() -> None:
     """Explicit proto defaults must not be confused with absent fields."""

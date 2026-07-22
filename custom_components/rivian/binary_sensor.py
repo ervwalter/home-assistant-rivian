@@ -25,7 +25,7 @@ def binary_sensor_descriptions(
 ) -> tuple[RivianBinarySensorEntityDescription, ...]:
     """Return the stable binary-sensor profile for a vehicle."""
     if is_r2_vehicle(vehicle):
-        return tuple(
+        descriptions = tuple(
             description
             for description in R2_BINARY_SENSORS
             if (
@@ -37,6 +37,13 @@ def binary_sensor_descriptions(
                 and "PX_STATE_ALL" in vehicle.get("supported_features", [])
             )
         )
+        if "PX_STATE_ALL" in vehicle.get("supported_features", []):
+            descriptions += tuple(
+                description
+                for description in BINARY_SENSORS["R1"]
+                if description.key == "use_state"
+            )
+        return descriptions
     return tuple(
         description
         for model, model_descriptions in BINARY_SENSORS.items()

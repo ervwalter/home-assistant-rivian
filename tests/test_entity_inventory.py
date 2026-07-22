@@ -97,6 +97,7 @@ def test_r2_inventory_is_stable_and_capability_gated() -> None:
         "window_liftgate_closed",
         "window_rear_left_closed",
         "window_rear_right_closed",
+        "use_state",
     }
     assert set(_keys(charging_sensor_descriptions(full_vehicle))) == {
         "charging_energy_delivered",
@@ -127,6 +128,7 @@ def test_r2_inventory_is_stable_and_capability_gated() -> None:
     )
     assert {
         "altitude",
+        "bearing",
         "battery_cell_average_temperature",
         "battery_cell_max_temperature",
         "battery_cell_min_temperature",
@@ -135,6 +137,7 @@ def test_r2_inventory_is_stable_and_capability_gated() -> None:
         "drive_mode",
         "gear_status",
         "power_state",
+        "speed",
         "tire_pressure_front_left",
         "tire_pressure_front_right",
         "tire_pressure_rear_left",
@@ -149,6 +152,18 @@ def test_r2_inventory_is_stable_and_capability_gated() -> None:
         description for description in SENSORS["R1"] if description.key == "power_state"
     )
     assert "Unknown" not in (r1_power_state.options or ())
+
+    navigation_vehicle = {
+        "model": "R2",
+        "supported_features": ["TRIP_NAV_PX"],
+    }
+    assert set(_keys(vehicle_sensor_descriptions(navigation_vehicle))) == {
+        *set(_keys(vehicle_sensor_descriptions(base_vehicle))),
+        "navigation_destination",
+        "navigation_distance_remaining",
+        "navigation_eta",
+        "navigation_time_remaining",
+    }
 
 
 def test_registry_cleanup_only_removes_obsolete_exact_r2_entities() -> None:
