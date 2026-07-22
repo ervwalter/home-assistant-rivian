@@ -1226,7 +1226,7 @@ def test_tires_use_per_record_source_timestamp() -> None:
 
 
 def test_preconditioning_status_codes_use_protocol_semantics() -> None:
-    """All running phases are active while unsupported codes remain unavailable."""
+    """Driving-only code 8 is off in use and unavailable while stationary."""
     coordinator = _vehicle_coordinator()
     for code in (1, 2, 3, 4):
         coordinator._apply_parallax_state(
@@ -1244,10 +1244,97 @@ def test_preconditioning_status_codes_use_protocol_semantics() -> None:
     assert coordinator.get("r2CabinPreconditioningStatusCode") == 8
 
     coordinator._apply_parallax_state(
+        _message("vehicle.power.state", 550),
+        SimpleNamespace(state_code=4),
+    )
+    assert coordinator.get("cabinPreconditioningStatus") == "inactive"
+
+    coordinator._apply_parallax_state(
+        _message("vehicle.power.state", 560),
+        SimpleNamespace(state_code=3),
+    )
+    assert coordinator.get("cabinPreconditioningStatus") is None
+
+    coordinator._apply_parallax_state(
+        _message("dynamics.vehicle.gear", 570),
+        SimpleNamespace(state_code=4),
+    )
+    assert coordinator.get("cabinPreconditioningStatus") == "inactive"
+
+    coordinator._apply_parallax_state(
         _message("comfort.cabin.cabin_preconditioning_status", 600),
         SimpleNamespace(status_code=None, type_code=None),
     )
     assert coordinator.get("cabinPreconditioningStatus") == "inactive"
+
+
+def test_comfort_topics_expose_verified_state_and_raw_diagnostics() -> None:
+    """Verified comfort fields are adapted without guessing unknown enums."""
+    coordinator = _vehicle_coordinator()
+    coordinator._apply_parallax_state(
+        _message("comfort.cabin.hvac_settings_status", 100),
+        SimpleNamespace(target_temperature_c=23.5),
+    )
+    coordinator._apply_parallax_state(
+        _message("comfort.cabin.pet_mode_status", 200),
+        SimpleNamespace(state_code=1, temperature_status_code=2),
+    )
+    coordinator._apply_parallax_state(
+        _message("comfort.cabin.cabin_ventilation_setting", 300),
+        SimpleNamespace(setting_code=1),
+    )
+    coordinator._apply_parallax_state(
+        _message("comfort.cabin.climate_hold_setting", 400),
+        SimpleNamespace(duration_seconds=7200),
+    )
+    coordinator._apply_parallax_state(
+        _message("comfort.cabin.climate_hold_status", 500),
+        SimpleNamespace(
+            status_code=1,
+            availability_code=2,
+            unavailability_reason_code=3,
+            hold_end_timestamp_ms=1_700_000_900_000,
+        ),
+    )
+    coordinator._apply_parallax_state(
+        _message("comfort.cabin.defrost_defog_status", 600),
+        SimpleNamespace(status_code=4),
+    )
+    coordinator._apply_parallax_state(
+        _message("comfort.cabin.seat_conditioning_status", 700),
+        SimpleNamespace(
+            states=(
+                SimpleNamespace(
+                    component_code=5,
+                    conditioning_type_code=2,
+                ),
+            )
+        ),
+    )
+
+    assert coordinator.get("cabinClimateDriverTemperature") == 23.5
+    assert coordinator.get("petModeStatus") == "On"
+    assert coordinator.get("r2PetModeStatusCode") == 1
+    assert coordinator.get("r2PetModeTemperatureStatusCode") == 2
+    assert coordinator.get("r2CabinVentilationSettingCode") == 1
+    assert coordinator.get("r2ClimateHoldDurationSeconds") == 7200
+    assert coordinator.get("r2ClimateHoldStatusCode") == 1
+    assert coordinator.get("r2ClimateHoldAvailabilityCode") == 2
+    assert coordinator.get("r2ClimateHoldUnavailabilityReasonCode") == 3
+    assert coordinator.get("r2ClimateHoldEndTimestampMs") == 1_700_000_900_000
+    assert coordinator.get("r2DefrostDefogStatusCode") == 4
+    assert coordinator.get("r2SeatConditioningStates") == [
+        {
+            "component_code": 5,
+            "conditioning_type_code": 2,
+        }
+    ]
+
+    coordinator._apply_parallax_state(
+        _message("comfort.cabin.pet_mode_status", 800),
+        SimpleNamespace(state_code=3, temperature_status_code=None),
+    )
+    assert coordinator.get("petModeStatus") is None
 
 
 def test_battery_state_exposes_capacity_not_current_energy() -> None:
